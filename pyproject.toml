@@ -1,0 +1,26 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ds-cerf-supplement"
+version = "0.1.0"
+requires-python = ">=3.11"
+dependencies = [
+    "streamlit>=1.35",
+    "anthropic>=0.40",
+    "requests",
+    "pandas",
+    "pyarrow",
+    "python-dotenv",
+    "ocha-stratus",
+]
+
+[tool.uv.sources]
+ocha-stratus = { path = "../ocha-stratus", editable = true }
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.ruff]
+line-length = 88
