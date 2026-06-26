@@ -1,28 +1,39 @@
 """
-One-off script: pre-populate supplemental data from the existing
-cerf-storms-with-sids-2024-02-27.csv (58 SIDs, one per CERF allocation).
+One-off script: (re)build supplemental SID data from the existing
+cerf-storms-with-sids-2024-02-27.csv (58 storm allocations with SIDs).
 
-Matching strategy:
-  1. Primary: CountryName + date + amount (exact)
-  2. Fallback: CountryName + amount (dates in the CSV are sometimes off by
-     days/weeks from the CERF API endorsement date)
+Matching strategy (CSV row -> CERF ApplicationID):
+  Key on (CountryName, exact USD amount). Amount is unique across CERF except
+  for two round numbers; those are disambiguated by nearest endorsement date.
 
-Existing annotations in the blob are NOT overwritten.
+Every resulting (ApplicationID -> sid) pair is verified against IBTrACS
+(storm season must be within 1 year of the allocation year). Pairs that fail
+verification are reported and excluded.
+
+This OVERWRITES the supplemental blob (SID column). Run with --write to commit.
 """
 
+import argparse
 import os
 import sys
+import xml.etree.ElementTree as ET
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
 import requests
-import xml.etree.ElementTree as ET
 
 os.environ.setdefault("PGSSLMODE", "require")
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.storage import BLOB_NAME, CONTAINER, STAGE, load_supplemental, save_supplemental
+from src.db import load_storms  # noqa: E402
+from src.storage import (  # noqa: E402
+    BLOB_NAME,
+    CONTAINER,
+    STAGE,
+    load_supplemental,
+    save_supplemental,
+)
 
 CERF_API_URL = "https://cerfgms-webapi.unocha.org/v1/application/All.xml"
 CSV_PATH = Path(
@@ -43,88 +54,102 @@ def fetch_cerf() -> pd.DataFrame:
             return ch.text.strip() if ch is not None and ch.text else None
         rows.append({
             "ApplicationID": t("ApplicationID"),
+            "ApplicationCode": t("ApplicationCode"),
             "CountryName": t("CountryName"),
-            "amount_int": None,
-            "alloc_date": None,
-            "_amount_raw": t("TotalAmountApproved"),
-            "_date_raw": t("CN_ERC_EndorsementDate"),
+            "Year": pd.to_numeric(t("Year"), errors="coerce"),
+            "amount_int": pd.to_numeric(t("TotalAmountApproved"), errors="coerce"),
+            "alloc_date": pd.to_datetime(t("CN_ERC_EndorsementDate"), errors="coerce"),
         })
     df = pd.DataFrame(rows)
-    df["amount_int"] = pd.to_numeric(df["_amount_raw"], errors="coerce").round().astype("Int64")
-    df["alloc_date"] = pd.to_datetime(df["_date_raw"], errors="coerce").dt.date
-    return df.drop(columns=["_amount_raw", "_date_raw"])
+    df["amount_int"] = df["amount_int"].round().astype("Int64")
+    return df
 
 
-def main():
+def main(write: bool):
     cerf = fetch_cerf()
     print(f"  {len(cerf)} CERF allocations")
 
     csv = pd.read_csv(CSV_PATH)
     csv = csv[csv["sid"].notna()].copy()
-    csv["alloc_date"] = pd.to_datetime(csv["Allocation date"], errors="coerce").dt.date
     csv["amount_int"] = csv["Amount in US$"].astype("Int64")
+    csv["alloc_date"] = pd.to_datetime(csv["Allocation date"], errors="coerce")
     print(f"\nCSV: {len(csv)} rows with SID")
 
-    cerf_indexed_date = cerf.set_index(["CountryName", "alloc_date", "amount_int"])["ApplicationID"]
-    cerf_indexed_amt  = cerf.set_index(["CountryName", "amount_int"])["ApplicationID"]
-
-    results = {}  # ApplicationID -> sid
+    pairs = []  # (ApplicationID, sid, ApplicationCode, country, year)
     unmatched = []
-
-    for _, row in csv.iterrows():
-        country, date, amt, sid = row["Country"], row["alloc_date"], row["amount_int"], row["sid"]
-
-        # Try primary: country + date + amount
-        key_full = (country, date, amt)
-        if key_full in cerf_indexed_date.index:
-            app_id = cerf_indexed_date[key_full]
-            results[str(app_id)] = sid
+    for _, r in csv.iterrows():
+        cands = cerf[
+            (cerf["CountryName"] == r["Country"])
+            & (cerf["amount_int"] == r["amount_int"])
+        ]
+        if len(cands) == 0:
+            unmatched.append((r["Country"], r["amount_int"], r["sid"]))
             continue
+        if len(cands) > 1:
+            # disambiguate by nearest endorsement date
+            cands = cands.assign(
+                _gap=(cands["alloc_date"] - r["alloc_date"]).abs()
+            ).sort_values("_gap")
+        c = cands.iloc[0]
+        pairs.append((c["ApplicationID"], r["sid"], c["ApplicationCode"], c["CountryName"], c["Year"]))
 
-        # Fallback: country + amount only
-        key_amt = (country, amt)
-        if key_amt in cerf_indexed_amt.index:
-            app_id = cerf_indexed_amt[key_amt]
-            results[str(app_id)] = sid
-            print(f"  Fallback match (amt only): {country} {date} ${amt} -> {app_id}")
-            continue
+    matched = pd.DataFrame(pairs, columns=["ApplicationID", "sid", "ApplicationCode", "CountryName", "Year"])
+    matched = matched.drop_duplicates(subset=["ApplicationID"], keep="first")
+    print(f"Matched: {len(matched)}  Unmatched: {len(unmatched)}")
+    for c, a, s in unmatched:
+        print(f"  UNMATCHED: {c} ${a} {s}")
 
-        unmatched.append(row)
+    # --- Verify every pair ---
+    # Base the check on the year encoded in the SID prefix (YYYY...), which is
+    # independent of the DB and works even for unnamed storms. Merge in the
+    # IBTrACS name/season for display only.
+    storms = load_storms.__wrapped__()  # sid, name, season
+    v = matched.merge(storms, on="sid", how="left")
+    v["Year"] = v["Year"].astype("Int64")
+    v["season"] = v["season"].astype("Int64")
+    v["sid_year"] = v["sid"].str[:4].astype(int)
+    v["year_gap"] = (v["sid_year"] - v["Year"]).abs()
+    v["ok"] = v["year_gap"] <= 1
 
-    print(f"\nMatched: {len(results)}  Unmatched: {len(unmatched)}")
-    if unmatched:
-        print("  Unmatched rows:")
-        for r in unmatched:
-            print(f"    {r['Country']}  {r['alloc_date']}  ${r['amount_int']}  {r['sid']}")
+    bad = v[~v["ok"].fillna(False)]
+    print(f"\nVerification: {v['ok'].sum()} OK, {len(bad)} FAILED")
+    if not bad.empty:
+        print(bad[["ApplicationCode", "CountryName", "Year", "name", "season", "sid"]].to_string(index=False))
 
-    # Load existing, skip already-annotated
-    existing = load_supplemental()
-    already = set(existing["ApplicationID"]) if not existing.empty else set()
-    new_results = {k: v for k, v in results.items() if k not in already}
-    print(f"\nAlready in blob: {len(already)}  New to add: {len(new_results)}")
+    good = v[v["ok"]].copy()
+    print(f"\n=== {len(good)} verified pairs ===")
+    print(good[["ApplicationCode", "CountryName", "Year", "name", "season", "sid"]].sort_values("ApplicationCode").to_string(index=False))
 
-    if not new_results:
-        print("Nothing new to write.")
+    if not write:
+        print("\n(dry run — pass --write to save)")
         return
 
-    new_rows = pd.DataFrame([
-        {
-            "ApplicationID": app_id,
-            "sid": sid,
-            "valid_month_start": None,
-            "valid_year_start": None,
-            "valid_month_end": None,
-            "valid_year_end": None,
-            "notes": None,
-            "updated_at": datetime.now(timezone.utc),
-        }
-        for app_id, sid in new_results.items()
-    ])
+    new_rows = pd.DataFrame({
+        "ApplicationID": good["ApplicationID"].values,
+        "sid": good["sid"].values,
+        "valid_month_start": None,
+        "valid_year_start": None,
+        "valid_month_end": None,
+        "valid_year_end": None,
+        "notes": None,
+        "updated_at": datetime.now(timezone.utc),
+    })
 
-    updated = pd.concat([existing, new_rows], ignore_index=True)
-    save_supplemental(updated)
-    print(f"Saved {len(new_rows)} new rows to blob ({CONTAINER}/{BLOB_NAME}, stage={STAGE})")
+    # Preserve only genuine drought annotations (a month or year set); drop any
+    # prior SID-only rows so a re-seed fully replaces the (possibly stale) SIDs.
+    existing = load_supplemental()
+    drought_cols = ["valid_month_start", "valid_year_start", "valid_month_end", "valid_year_end"]
+    if not existing.empty:
+        has_drought = existing[drought_cols].notna().any(axis=1)
+        keep = existing[has_drought & ~existing["ApplicationID"].isin(new_rows["ApplicationID"])]
+        out = pd.concat([keep, new_rows], ignore_index=True)
+    else:
+        out = new_rows
+    save_supplemental(out)
+    print(f"\nSaved {len(new_rows)} SID rows ({len(out)} total) to {CONTAINER}/{BLOB_NAME} (stage={STAGE})")
 
 
 if __name__ == "__main__":
-    main()
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--write", action="store_true")
+    main(ap.parse_args().write)
