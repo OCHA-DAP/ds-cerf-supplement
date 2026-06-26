@@ -7,13 +7,11 @@ name = "ds-cerf-supplement"
 version = "0.1.0"
 requires-python = ">=3.11"
 dependencies = [
-    "streamlit>=1.35",
-    "anthropic>=0.40",
     "requests",
     "pandas",
     "pyarrow",
     "python-dotenv",
-    "ocha-stratus",
+    "ocha-stratus>=0.1.7",
 ]
 
 [tool.uv.sources]
