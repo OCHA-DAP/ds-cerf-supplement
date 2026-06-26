@@ -47,6 +47,22 @@ The DB connection uses `ocha_stratus.get_engine()` — standard OCHA stratus set
 - **Refresh** — button in the sidebar re-fetches CERF data and storm list (both cached for 1h / 24h respectively)
 - Clearing all editable fields for a row removes that row from the supplemental data
 
+## Daily storm-SID check (GitHub Actions)
+
+`.github/workflows/check-storm-sids.yml` runs daily (and on demand via the
+Actions tab → *Check storm SIDs* → *Run workflow*). It:
+
+1. Finds every storm allocation with no SID assigned yet (backfill — covers all history).
+2. Parses the storm name(s) from the allocation title and resolves them against `storms.ibtracs_storms`.
+3. **Backfills** the SID(s) when every named storm resolves to exactly one IBTrACS storm within ±1 year (handles multi-storm titles like "TC Batsirai & Emnati").
+4. **Opens a GitHub issue** (label `cerf-sid`, assigned to `@t-downing`) for any it can't resolve — no storm name in the title, a name not in IBTrACS, or an ambiguous match — with candidate storms and research links. Already-issued allocations (open or closed) are skipped, so it won't spam or re-open resolved ones.
+
+Run `python scripts/check_storm_sids.py --dry-run` locally to preview without writing.
+
+Required repo **secrets** (Settings → Secrets and variables → Actions):
+`DSCI_AZ_BLOB_DEV_SAS`, `DSCI_AZ_BLOB_DEV_SAS_WRITE`, `DSCI_AZ_DB_DEV_HOST`,
+`DSCI_AZ_DB_DEV_UID`, `DSCI_AZ_DB_DEV_PW`. (`GITHUB_TOKEN` is provided automatically.)
+
 ## Project structure
 
 ```
@@ -55,4 +71,8 @@ src/
   cerf_api.py           # Fetch + parse OneGMS XML → DataFrame
   db.py                 # Load storms from storms.ibtracs_storms
   storage.py            # Read/write supplemental parquet via ocha-stratus
+scripts/
+  seed_from_existing.py # One-off: rebuild SIDs from the tropicalcyclones CSV
+  fill_guessed_sids.py  # One-off: high-confidence SID guesses from titles
+  check_storm_sids.py   # Daily: backfill resolvable SIDs, open issues for the rest
 ```
