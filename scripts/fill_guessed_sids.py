@@ -21,7 +21,14 @@ os.environ.setdefault("PGSSLMODE", "require")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.cerf_api import fetch_cerf_allocations  # noqa: E402
 from src.db import load_storms  # noqa: E402
-from src.storage import BLOB_NAME, CONTAINER, STAGE, load_supplemental, save_supplemental  # noqa: E402
+from src.storage import (  # noqa: E402
+    BLOB_NAME,
+    CONTAINER,
+    STAGE,
+    encode_sids,
+    load_supplemental,
+    save_supplemental,
+)
 
 # ApplicationCode -> (sid, storm label). All verified present in IBTrACS with
 # season within 1 yr of the allocation year.
@@ -49,16 +56,15 @@ HIGH_CONFIDENCE = {
 
 def main(write: bool):
     cerf = fetch_cerf_allocations.__wrapped__()
-    code_to_id = dict(zip(cerf["ApplicationCode"], cerf["ApplicationID"]))
+    valid_codes = set(cerf["ApplicationCode"])
     storms = load_storms.__wrapped__().set_index("sid")
 
     rows = []
     print("=== High-confidence fills ===")
     for code, (sid, label) in HIGH_CONFIDENCE.items():
-        app_id = code_to_id.get(code)
-        assert app_id is not None, f"ApplicationCode not found: {code}"
+        assert code in valid_codes, f"ApplicationCode not found: {code}"
         assert sid in storms.index, f"SID not in IBTrACS: {sid} ({label})"
-        rows.append({"ApplicationID": app_id, "sid": sid})
+        rows.append({"ApplicationCode": code, "sids": encode_sids([sid])})
         print(f"  {code:22s} -> {sid}  ({label})")
 
     new_rows = pd.DataFrame(rows)
@@ -70,8 +76,8 @@ def main(write: bool):
     new_rows["updated_at"] = datetime.now(timezone.utc)
 
     existing = load_supplemental()
-    already = set(existing["ApplicationID"]) if not existing.empty else set()
-    to_add = new_rows[~new_rows["ApplicationID"].isin(already)]
+    already = set(existing["ApplicationCode"]) if not existing.empty else set()
+    to_add = new_rows[~new_rows["ApplicationCode"].isin(already)]
     print(f"\n{len(new_rows)} guesses, {len(to_add)} new (rest already present)")
 
     if not write:

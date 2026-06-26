@@ -31,6 +31,7 @@ from src.storage import (  # noqa: E402
     BLOB_NAME,
     CONTAINER,
     STAGE,
+    encode_sids,
     load_supplemental,
     save_supplemental,
 )
@@ -91,10 +92,10 @@ def main(write: bool):
                 _gap=(cands["alloc_date"] - r["alloc_date"]).abs()
             ).sort_values("_gap")
         c = cands.iloc[0]
-        pairs.append((c["ApplicationID"], r["sid"], c["ApplicationCode"], c["CountryName"], c["Year"]))
+        pairs.append((r["sid"], c["ApplicationCode"], c["CountryName"], c["Year"]))
 
-    matched = pd.DataFrame(pairs, columns=["ApplicationID", "sid", "ApplicationCode", "CountryName", "Year"])
-    matched = matched.drop_duplicates(subset=["ApplicationID"], keep="first")
+    matched = pd.DataFrame(pairs, columns=["sid", "ApplicationCode", "CountryName", "Year"])
+    matched = matched.drop_duplicates(subset=["ApplicationCode"], keep="first")
     print(f"Matched: {len(matched)}  Unmatched: {len(unmatched)}")
     for c, a, s in unmatched:
         print(f"  UNMATCHED: {c} ${a} {s}")
@@ -125,8 +126,8 @@ def main(write: bool):
         return
 
     new_rows = pd.DataFrame({
-        "ApplicationID": good["ApplicationID"].values,
-        "sid": good["sid"].values,
+        "ApplicationCode": good["ApplicationCode"].values,
+        "sids": [encode_sids([s]) for s in good["sid"].values],
         "valid_month_start": None,
         "valid_year_start": None,
         "valid_month_end": None,
@@ -141,7 +142,7 @@ def main(write: bool):
     drought_cols = ["valid_month_start", "valid_year_start", "valid_month_end", "valid_year_end"]
     if not existing.empty:
         has_drought = existing[drought_cols].notna().any(axis=1)
-        keep = existing[has_drought & ~existing["ApplicationID"].isin(new_rows["ApplicationID"])]
+        keep = existing[has_drought & ~existing["ApplicationCode"].isin(new_rows["ApplicationCode"])]
         out = pd.concat([keep, new_rows], ignore_index=True)
     else:
         out = new_rows
