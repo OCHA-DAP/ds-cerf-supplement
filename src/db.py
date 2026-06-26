@@ -1,13 +1,15 @@
+import logging
 import os
+from functools import lru_cache
 
 import pandas as pd
-import streamlit as st
 import ocha_stratus as stratus
 
 os.environ.setdefault("PGSSLMODE", "require")
+logger = logging.getLogger(__name__)
 
 
-@st.cache_data(ttl=86400, show_spinner=False)
+@lru_cache(maxsize=1)
 def load_storms() -> pd.DataFrame:
     """Returns DataFrame with sid, name, season from storms.ibtracs_storms."""
     try:
@@ -19,5 +21,5 @@ def load_storms() -> pd.DataFrame:
                 conn,
             )
     except Exception as e:
-        st.warning(f"Could not load storms from DB: {e}")
+        logger.warning(f"Could not load storms from DB: {e}")
         return pd.DataFrame(columns=["sid", "name", "season"])

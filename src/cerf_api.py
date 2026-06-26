@@ -1,8 +1,8 @@
 import xml.etree.ElementTree as ET
+from functools import lru_cache
 
 import pandas as pd
 import requests
-import streamlit as st
 
 CERF_API_URL = "https://cerfgms-webapi.unocha.org/v1/application/All.xml"
 
@@ -23,7 +23,7 @@ _FIELDS = [
 ]
 
 
-@st.cache_data(ttl=3600, show_spinner=False)
+@lru_cache(maxsize=1)
 def fetch_cerf_allocations() -> pd.DataFrame:
     resp = requests.get(CERF_API_URL, timeout=120)
     resp.raise_for_status()
