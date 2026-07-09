@@ -61,9 +61,28 @@ Actions tab → *Check storm SIDs* → *Run workflow*). It:
 
 Run `python scripts/check_storm_sids.py --dry-run` locally to preview without writing.
 
+It also **flags allocations `not_tc`** — a storm allocation that's definitely
+not a tropical cyclone (tornado, winter storm, inland flooding outside any TC
+basin) and will never be in IBTrACS — and **auto-closes** the GitHub issue for
+any allocation once it's resolved (SID assigned or flagged `not_tc`).
+
 Required repo **secrets** (Settings → Secrets and variables → Actions):
 `DSCI_AZ_BLOB_DEV_SAS`, `DSCI_AZ_BLOB_DEV_SAS_WRITE`, `DSCI_AZ_DB_DEV_HOST`,
 `DSCI_AZ_DB_DEV_UID`, `DSCI_AZ_DB_DEV_PW`. (`GITHUB_TOKEN` is provided automatically.)
+
+## Daily Claude matcher (GitHub Actions)
+
+`.github/workflows/claude-match-storms.yml` runs daily at 07:00 UTC (after the
+deterministic check) and uses **Claude Code** to resolve the allocations the
+title parser couldn't — reading each allocation's summary and doing web
+research to identify the specific storm(s):
+
+1. `scripts/prepare_claude_input.py` writes the unresolved allocations + their candidate IBTrACS storms to `claude_work/unresolved.json`.
+2. Claude Code (tools limited to Read/Write/WebSearch/WebFetch — **no** blob/DB access) researches and writes `claude_work/matches.json`.
+3. `scripts/apply_claude_matches.py` validates each match (SID exists in IBTrACS, season within ±1 year) and writes only **confidence ≥ 0.8** results to the blob (as SID(s) or `not_tc`); lower-confidence suggestions are posted as comments on the open issue for you to review.
+
+Needs one extra secret: **`CLAUDE_CODE_OAUTH_TOKEN`** (generate locally with
+`claude setup-token`, then add it under Settings → Secrets → Actions).
 
 ## Project structure
 
@@ -75,9 +94,14 @@ src/
   cerf_api.py           # Fetch + parse OneGMS XML → DataFrame
   db.py                 # Load storms from storms.ibtracs_storms
   storage.py            # Read/write supplemental parquet via ocha-stratus
+prompts/
+  match_storms.md       # Instructions for the daily Claude matcher
 scripts/
-  export_site_data.py   # Build site/data.json (allocation ↔ storm matches)
-  check_storm_sids.py   # Daily: backfill resolvable SIDs, open issues for the rest
-  seed_from_existing.py # One-off: rebuild SIDs from the tropicalcyclones CSV
-  fill_guessed_sids.py  # One-off: high-confidence SID guesses from titles
+  export_site_data.py     # Build site/data.json (allocation ↔ storm matches)
+  check_storm_sids.py     # Daily: backfill title-resolvable SIDs, manage issues
+  prepare_claude_input.py # Daily: dump unresolved allocations + candidates
+  apply_claude_matches.py # Daily: validate + apply Claude's high-confidence matches
+  seed_from_existing.py   # One-off: rebuild SIDs from the tropicalcyclones CSV
+  fill_guessed_sids.py    # One-off: high-confidence SID guesses from titles
+  finalize_storms.py      # One-off: flag not_tc + summary-based matches
 ```

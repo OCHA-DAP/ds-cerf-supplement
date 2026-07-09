@@ -1,0 +1,57 @@
+name: Claude match storms
+
+# Daily (after the deterministic check): use Claude Code to research the storm
+# allocations still without a SID, then apply only the high-confidence,
+# validated matches to the blob. Needs the CLAUDE_CODE_OAUTH_TOKEN secret
+# (generate with `claude setup-token`).
+on:
+  schedule:
+    - cron: "0 7 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  match:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+      - name: Install
+        run: |
+          uv venv --python 3.12
+          uv pip install --no-sources -e .
+
+      - name: Prepare unresolved allocations
+        env:
+          PGSSLMODE: require
+          DSCI_AZ_BLOB_DEV_SAS: ${{ secrets.DSCI_AZ_BLOB_DEV_SAS }}
+          DSCI_AZ_DB_DEV_HOST: ${{ secrets.DSCI_AZ_DB_DEV_HOST }}
+          DSCI_AZ_DB_DEV_UID: ${{ secrets.DSCI_AZ_DB_DEV_UID }}
+          DSCI_AZ_DB_DEV_PW: ${{ secrets.DSCI_AZ_DB_DEV_PW }}
+        run: uv run --no-sync python scripts/prepare_claude_input.py
+
+      # Claude researches the allocations and writes claude_work/matches.json.
+      # Restricted to read/write/search tools — it cannot touch the blob or DB;
+      # the apply step below does all validated writes.
+      - name: Claude research
+        uses: anthropics/claude-code-base-action@beta
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: "Read the file prompts/match_storms.md and follow its instructions exactly."
+          allowed_tools: "Read,Write,Edit,WebSearch,WebFetch"
+
+      - name: Apply high-confidence matches
+        env:
+          PGSSLMODE: require
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DSCI_AZ_BLOB_DEV_SAS: ${{ secrets.DSCI_AZ_BLOB_DEV_SAS }}
+          DSCI_AZ_BLOB_DEV_SAS_WRITE: ${{ secrets.DSCI_AZ_BLOB_DEV_SAS_WRITE }}
+          DSCI_AZ_DB_DEV_HOST: ${{ secrets.DSCI_AZ_DB_DEV_HOST }}
+          DSCI_AZ_DB_DEV_UID: ${{ secrets.DSCI_AZ_DB_DEV_UID }}
+          DSCI_AZ_DB_DEV_PW: ${{ secrets.DSCI_AZ_DB_DEV_PW }}
+        run: uv run --no-sync python scripts/apply_claude_matches.py

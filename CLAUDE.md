@@ -2,12 +2,15 @@
 
 ## Architecture
 
-No interactive app. Two automated flows over the data in `src/`:
+No interactive app. Automated flows over the data in `src/`:
 
-- **`scripts/check_storm_sids.py`** (daily GHA) — backfills SIDs resolvable from allocation titles, opens GitHub issues for the rest.
-- **`scripts/export_site_data.py`** → `site/data.json`, served by the static `site/index.html` page on GitHub Pages (deployed via `deploy-site.yml`, no commits to `main`).
+- **`check_storm_sids.py`** (daily GHA, 06:00) — backfills SIDs resolvable from titles, opens issues for the rest, and **auto-closes** issues once resolved (SID or `not_tc`).
+- **`prepare_claude_input.py` → Claude Code → `apply_claude_matches.py`** (`claude-match-storms.yml`, daily 07:00) — Claude researches the remaining unresolved allocations (summary + web search) and writes matches; the apply step validates and writes only confidence ≥ 0.8. Claude gets Read/Write/WebSearch/WebFetch only — no blob/DB creds. Needs `CLAUDE_CODE_OAUTH_TOKEN` secret.
+- **`export_site_data.py`** → `site/data.json`, served by static `site/index.html` on GitHub Pages (`deploy-site.yml`, no commits to `main`).
 
-GitHub Pages source must be **GitHub Actions** (not a branch). `site/data.json` is git-ignored and regenerated on each deploy.
+GitHub Pages source must be **GitHub Actions** (not a branch). `site/data.json` and `claude_work/` are git-ignored.
+
+An allocation is "resolved" (dropped from all queues) when `is_resolved(row)` is true — it has a SID **or** `not_tc=True`. `not_tc` marks a storm allocation that is definitely not a tropical cyclone.
 
 ## Blob storage
 
