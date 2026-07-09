@@ -27,7 +27,11 @@ def main():
 
     resolved = {r["ApplicationCode"] for _, r in supp.iterrows() if is_resolved(r)} if not supp.empty else set()
     cerf["_type"] = cerf["EmergencyTypeName"].map(classify_type)
-    un = cerf[(cerf["_type"] == "Storm") & (~cerf["ApplicationCode"].isin(resolved))]
+    un = cerf[
+        (cerf["_type"] == "Storm")
+        & (cerf["WindowFullName"] == "Rapid Response")  # exclude Underfunded
+        & (~cerf["ApplicationCode"].isin(resolved))
+    ]
 
     storms = storms.assign(season=storms["season"].astype(int))
     allocations = []

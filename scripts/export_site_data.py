@@ -42,6 +42,9 @@ def main():
     rows = []
     for _, a in cerf.iterrows():
         code = a["ApplicationCode"]
+        # Rapid Response only — Underfunded Emergencies are out of scope
+        if a["WindowFullName"] != "Rapid Response":
+            continue
         sids = sids_map.get(code, [])
         not_tc = not_tc_map.get(code, False)
         if a["_type"] != "Storm" and not sids and not not_tc:

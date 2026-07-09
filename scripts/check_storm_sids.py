@@ -222,9 +222,15 @@ def main(write: bool):
     if not supp.empty:
         resolved_codes = {r["ApplicationCode"] for _, r in supp.iterrows() if is_resolved(r)}
 
+    # Scope: Rapid Response storm allocations only. Underfunded Emergencies (UF)
+    # allocations aren't triggered by a specific storm, so they're out of scope.
     cerf["_type"] = cerf["EmergencyTypeName"].map(classify_type)
-    storm_allocs = cerf[(cerf["_type"] == "Storm") & (~cerf["ApplicationCode"].isin(resolved_codes))]
-    print(f"{len(storm_allocs)} unresolved storm allocations (no SID, not flagged not-a-TC)")
+    storm_allocs = cerf[
+        (cerf["_type"] == "Storm")
+        & (cerf["WindowFullName"] == "Rapid Response")
+        & (~cerf["ApplicationCode"].isin(resolved_codes))
+    ]
+    print(f"{len(storm_allocs)} unresolved RR storm allocations (no SID, not flagged not-a-TC)")
 
     seen_issue_codes = existing_issue_codes() if (write and TOKEN) else set()
     if write and TOKEN:
@@ -280,15 +286,18 @@ def main(write: bool):
             print(f"       issue: {url}")
             created += 1
 
-    # --- close issues whose allocation is now resolved ---
+    # --- close issues that shouldn't stay open ---
+    # Keep open only issues for allocations still in scope and unresolved
+    # (i.e. the ones we just flagged). Everything else — resolved, or now
+    # out of scope (e.g. Underfunded) — gets closed.
     closed = 0
     if write and TOKEN:
-        done = resolved_codes | {a["ApplicationCode"] for a, _, _ in filled}
+        keep_open = {alloc["ApplicationCode"] for alloc, _, _, _ in to_flag}
         for code, number in open_issues_by_code().items():
-            if code in done:
-                close_issue(number, "✅ Resolved — a storm SID was assigned or "
-                                    "the allocation was flagged as not a tropical "
-                                    "cyclone. Closing automatically.")
+            if code not in keep_open:
+                close_issue(number, "✅ Closing automatically — this allocation is "
+                                    "now resolved (SID assigned / flagged not-a-TC) "
+                                    "or out of scope (Underfunded Emergencies).")
                 print(f"  CLOSE #{number} {code}")
                 closed += 1
 
