@@ -32,9 +32,10 @@ def main():
         r["sid"]: {"name": r["name"], "season": int(r["season"])}
         for _, r in storms.iterrows()
     }
-    sids_map = {}
+    sids_map, not_tc_map = {}, {}
     if not supp.empty:
         sids_map = {r["ApplicationCode"]: decode_sids(r["sids"]) for _, r in supp.iterrows()}
+        not_tc_map = {r["ApplicationCode"]: bool(r.get("not_tc")) for _, r in supp.iterrows()}
 
     cerf["_type"] = cerf["EmergencyTypeName"].map(classify_type)
 
@@ -42,13 +43,15 @@ def main():
     for _, a in cerf.iterrows():
         code = a["ApplicationCode"]
         sids = sids_map.get(code, [])
-        if a["_type"] != "Storm" and not sids:
-            continue  # storm allocations, plus anything tagged with a storm
+        not_tc = not_tc_map.get(code, False)
+        if a["_type"] != "Storm" and not sids and not not_tc:
+            continue  # storm allocations, plus anything explicitly annotated
         storms_out = [
             {"sid": s, "name": sid_info.get(s, {}).get("name"),
              "season": sid_info.get(s, {}).get("season")}
             for s in sids
         ]
+        status = "matched" if storms_out else ("not_tc" if not_tc else "unmatched")
         rows.append({
             "code": code,
             "country": a["CountryName"],
@@ -57,6 +60,7 @@ def main():
             "type": a["EmergencyTypeName"],
             "title": a["ApplicationTitle"],
             "storms": storms_out,
+            "status": status,
             "matched": bool(storms_out),
         })
 
@@ -67,8 +71,9 @@ def main():
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "rows": rows,
     }))
-    matched = sum(1 for r in rows if r["matched"])
-    print(f"Wrote {len(rows)} rows ({matched} matched, {len(rows) - matched} unmatched) to {OUT}")
+    n = lambda st: sum(1 for r in rows if r["status"] == st)
+    print(f"Wrote {len(rows)} rows ({n('matched')} matched, "
+          f"{n('not_tc')} not-a-TC, {n('unmatched')} unmatched) to {OUT}")
 
 
 if __name__ == "__main__":

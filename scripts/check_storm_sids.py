@@ -30,6 +30,7 @@ from src.db import load_storms  # noqa: E402
 from src.storage import (  # noqa: E402
     decode_sids,
     encode_sids,
+    is_resolved,
     load_supplemental,
     save_supplemental,
     upsert_annotation,
@@ -83,23 +84,37 @@ def _gh(method: str, path: str, **kw):
     return r
 
 
-def existing_issue_codes() -> set[str]:
-    """ApplicationCodes that already have an issue (any state) under our label."""
-    codes, page = set(), 1
+CODE_RE = re.compile(
+    r"\b(\d{2}-[A-Z]{2,3}-[A-Z]{3}-\d+|CERF-[A-Z]{3}-\d{2}-[A-Z]{2}-\d+)\b"
+)
+
+
+def _issues(state: str):
+    """Yield issues under our label in the given state ('all'/'open')."""
+    page = 1
     while True:
         r = _gh("GET", f"/repos/{REPO}/issues",
-                params={"labels": LABEL, "state": "all", "per_page": 100, "page": page})
+                params={"labels": LABEL, "state": state, "per_page": 100, "page": page})
         r.raise_for_status()
         batch = r.json()
         if not batch:
             break
-        for issue in batch:
-            m = re.search(r"\b(\d{2}-[A-Z]{2,3}-[A-Z]{3}-\d+|CERF-[A-Z]{3}-\d{2}-[A-Z]{2}-\d+)\b",
-                          issue.get("title", ""))
-            if m:
-                codes.add(m.group(1))
+        yield from batch
         page += 1
-    return codes
+
+
+def existing_issue_codes() -> set[str]:
+    """ApplicationCodes that already have an issue (any state) under our label."""
+    return {m.group(1) for i in _issues("all")
+            if (m := CODE_RE.search(i.get("title", "")))}
+
+
+def open_issues_by_code() -> dict[str, int]:
+    out = {}
+    for i in _issues("open"):
+        if (m := CODE_RE.search(i.get("title", ""))):
+            out[m.group(1)] = i["number"]
+    return out
 
 
 def ensure_label():
@@ -113,6 +128,11 @@ def create_issue(title: str, body: str):
             json={"title": title, "body": body, "labels": [LABEL], "assignees": [ASSIGNEE]})
     r.raise_for_status()
     return r.json()["html_url"]
+
+
+def close_issue(number: int, comment: str):
+    _gh("POST", f"/repos/{REPO}/issues/{number}/comments", json={"body": comment})
+    _gh("PATCH", f"/repos/{REPO}/issues/{number}", json={"state": "closed"})
 
 
 # ---------------------------------------------------------------- issue body
@@ -175,10 +195,12 @@ def build_body(alloc, names, problems, resolved, by_name) -> str:
         research_links(names, alloc["CountryName"], alloc["Year"]),
         "",
         "### How to resolve",
-        "Open the **CERF Supplement** app, find this allocation, and assign the "
-        "storm(s) (use the multi-storm editor if more than one). Then close this "
-        "issue. If there's genuinely no IBTrACS storm (e.g. a tornado or a "
-        "not-yet-archived storm), just close the issue — it won't be re-opened.",
+        "Assign the storm SID(s) for this allocation in the supplemental data. "
+        "If it's **definitely not a tropical cyclone** (e.g. a tornado, winter "
+        "storm, or inland flooding — it'll never be in IBTrACS), flag it "
+        "`not_tc` instead. Either way it drops off the list and won't be "
+        "re-flagged. If the storm just isn't archived in IBTrACS yet, leave the "
+        "issue open.",
     ]
     return "\n".join(parts)
 
@@ -195,13 +217,14 @@ def main(write: bool):
             (s["sid"], int(s["season"]), s.get("genesis_basin"))
         )
 
-    have_sid = set()
+    # resolved = has a SID assigned OR flagged as "not a tropical cyclone"
+    resolved_codes = set()
     if not supp.empty:
-        have_sid = {r["ApplicationCode"] for _, r in supp.iterrows() if decode_sids(r["sids"])}
+        resolved_codes = {r["ApplicationCode"] for _, r in supp.iterrows() if is_resolved(r)}
 
     cerf["_type"] = cerf["EmergencyTypeName"].map(classify_type)
-    storm_allocs = cerf[(cerf["_type"] == "Storm") & (~cerf["ApplicationCode"].isin(have_sid))]
-    print(f"{len(storm_allocs)} storm allocations without a SID")
+    storm_allocs = cerf[(cerf["_type"] == "Storm") & (~cerf["ApplicationCode"].isin(resolved_codes))]
+    print(f"{len(storm_allocs)} unresolved storm allocations (no SID, not flagged not-a-TC)")
 
     seen_issue_codes = existing_issue_codes() if (write and TOKEN) else set()
     if write and TOKEN:
@@ -257,8 +280,21 @@ def main(write: bool):
             print(f"       issue: {url}")
             created += 1
 
+    # --- close issues whose allocation is now resolved ---
+    closed = 0
+    if write and TOKEN:
+        done = resolved_codes | {a["ApplicationCode"] for a, _, _ in filled}
+        for code, number in open_issues_by_code().items():
+            if code in done:
+                close_issue(number, "✅ Resolved — a storm SID was assigned or "
+                                    "the allocation was flagged as not a tropical "
+                                    "cyclone. Closing automatically.")
+                print(f"  CLOSE #{number} {code}")
+                closed += 1
+
     summary = (f"Storm SID check: {len(filled)} backfilled, "
-               f"{created if (write and TOKEN) else len(to_flag)} flagged for review")
+               f"{created if (write and TOKEN) else len(to_flag)} flagged, "
+               f"{closed} issues closed")
     print(summary)
     if (gh_summary := os.getenv("GITHUB_STEP_SUMMARY")):
         with open(gh_summary, "a") as f:

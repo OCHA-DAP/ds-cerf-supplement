@@ -11,6 +11,7 @@ CONTAINER = "global"
 _COLUMNS = [
     "ApplicationCode",  # unique key (ApplicationID is NOT unique in the feed)
     "sids",  # JSON-encoded list of IBTrACS SIDs, e.g. '["sid1", "sid2"]'
+    "not_tc",  # True = storm allocation that is definitely NOT a tropical cyclone
     "valid_month_start",
     "valid_year_start",
     "valid_month_end",
@@ -18,6 +19,10 @@ _COLUMNS = [
     "notes",
     "updated_at",
 ]
+
+# a fully-resolved row has either storm(s) assigned or is flagged not-a-TC
+def is_resolved(row) -> bool:
+    return bool(decode_sids(row.get("sids"))) or bool(row.get("not_tc"))
 
 
 def encode_sids(sids: list[str] | None) -> str | None:
