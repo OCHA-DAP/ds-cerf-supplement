@@ -86,8 +86,14 @@ def main():
             if chk.TOKEN and code in open_issues and reason:
                 sugg = (f"🤖 **Claude suggestion** (confidence {conf:.0%}, not "
                         f"auto-applied): sids={sids or '—'}, not_tc={not_tc}\n\n{reason}")
-                chk._gh("POST", f"/repos/{chk.REPO}/issues/{open_issues[code]}/comments",
-                        json={"body": sugg})
+                num = open_issues[code]
+                existing = chk._gh(
+                    "GET", f"/repos/{chk.REPO}/issues/{num}/comments",
+                    params={"per_page": 100}).json()
+                bots = [c["body"] for c in existing if c["body"].lstrip().startswith("🤖")]
+                if not bots or bots[-1] != sugg:  # only post if new/changed
+                    chk._gh("POST", f"/repos/{chk.REPO}/issues/{num}/comments",
+                            json={"body": sugg})
 
     if applied:
         save_supplemental(supp)
