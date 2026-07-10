@@ -90,8 +90,10 @@ def main():
                 existing = chk._gh(
                     "GET", f"/repos/{chk.REPO}/issues/{num}/comments",
                     params={"per_page": 100}).json()
-                bots = [c["body"] for c in existing if c["body"].lstrip().startswith("🤖")]
-                if not bots or bots[-1] != sugg:  # only post if new/changed
+                # post the suggestion once only (Claude's wording varies per run,
+                # so post iff no prior bot suggestion exists — avoids daily spam)
+                has_bot = any(c["body"].lstrip().startswith("🤖") for c in existing)
+                if not has_bot:
                     chk._gh("POST", f"/repos/{chk.REPO}/issues/{num}/comments",
                             json={"body": sugg})
 
