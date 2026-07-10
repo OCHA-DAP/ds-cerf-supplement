@@ -12,6 +12,12 @@ GitHub Pages source must be **GitHub Actions** (not a branch). `site/data.json` 
 
 An allocation is "resolved" (dropped from all queues) when `is_resolved(row)` is true — it has a SID **or** `not_tc=True`. `not_tc` marks a storm allocation that is definitely not a tropical cyclone.
 
+## Human-in-the-loop
+
+Issues are the feedback channel. `check_storm_sids` opens `cerf-sid` issues for unresolved allocations and auto-closes them once resolved / out of scope. A human comment on an issue is **authoritative**: `prepare_claude_input` attaches issue comments (via `user_comments_by_code`, bot comments excluded) to each allocation, the prompt tells Claude to follow them, and `apply_claude_matches` writes the result and closes the issue.
+
+Issues also carrying the **`review`** label are manual double-checks of an *existing* match (opened by `raise_review_issues.py`). The checker never auto-closes `review` issues, and `prepare` only feeds an already-matched allocation to Claude once it has a human comment — so a review issue sits until you reply "correct" / "it's actually X" / "not a TC", then gets updated and closed on the next run.
+
 ## Blob storage
 
 `src/storage.py` targets container `global`, stage `dev`. The `load_supplemental` function migrates older schemas in-memory (`sid`→`sids`) and adds any missing columns.
