@@ -18,13 +18,17 @@ Issues are the feedback channel. `check_storm_sids` opens `cerf-sid` issues for 
 
 Issues also carrying the **`review`** label are manual double-checks of an *existing* match (opened by `raise_review_issues.py`). The checker never auto-closes `review` issues, and `prepare` only feeds an already-matched allocation to Claude once it has a human comment — so a review issue sits until you reply "correct" / "it's actually X" / "not a TC", then gets updated and closed on the next run.
 
-## Blob storage
+## Storage — dev DB, schema `aa`
 
-`src/storage.py` targets container `global`, stage `dev`. The `load_supplemental` function migrates older schemas in-memory (`sid`→`sids`) and adds any missing columns.
+Source of truth is the **DB** (was blob parquet until 2026-07; migrated via `scripts/migrate_blob_to_db.py`, blob now retired). Two normalized tables in the KB-owned `aa` schema, beside `aa.cerf_allocation`:
+- `aa.cerf_allocation_storm(application_code, sid)` — one row per matched storm
+- `aa.cerf_supplement(application_code, not_tc, valid_month_*, valid_year_*, notes, updated_at)`
 
-**Key column is `ApplicationCode`, NOT `ApplicationID`.** The CERF feed reuses `ApplicationID` across unrelated allocations (~431 collisions, e.g. ID 1019 = both Madagascar 2007 and Afghanistan 2023), which scrambles any join keyed on it. `ApplicationCode` (e.g. `23-RR-AFG-61441`) is unique and non-null for all 1609 rows — always key on it.
+`src/storage.py` keeps the **same public API + DataFrame shape** as the old blob code (`load_supplemental`/`save_supplemental`/`upsert_annotation`/`remove_annotation`, `sids` column is a JSON list string) — only the backing store changed, so the checker/export/prepare callers are unchanged. `save_supplemental` does a transactional full-replace of both tables (fine — small, single-writer). Writers need `get_engine(write=True)` (DSCI_AZ_DB_DEV_*_WRITE creds); readers use the read engine.
 
-Storms are stored in `sids` as a JSON-encoded list of IBTrACS SIDs (`'["sid1","sid2"]'`) so one allocation can map to multiple storms (e.g. Haiti 2008 = Fay/Gustav/Hanna/Ike). Use `encode_sids`/`decode_sids` helpers. Drought period uses `valid_month_start`/`valid_year_start`/`valid_month_end`/`valid_year_end` (separate start/end years since a drought can span a year boundary).
+**Key column is `ApplicationCode`, NOT `ApplicationID`.** The CERF feed reuses `ApplicationID` across unrelated allocations (~431 collisions, e.g. ID 1019 = both Madagascar 2007 and Afghanistan 2023). `ApplicationCode` (e.g. `23-RR-AFG-61441`) is unique — always key on it.
+
+Storms use `encode_sids`/`decode_sids` (JSON list ↔ rows in cerf_allocation_storm) so one allocation can map to multiple storms. Drought uses `valid_month_start`/`valid_year_start`/`valid_month_end`/`valid_year_end` (separate start/end years — a drought can span a year boundary).
 
 `scripts/seed_from_existing.py` (rebuild SIDs from the tropicalcyclones CSV, with IBTrACS verification) and `scripts/fill_guessed_sids.py` (high-confidence guesses from allocation titles) both `--write` to the blob — one-offs kept for re-seeding.
 

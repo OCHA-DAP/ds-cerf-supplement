@@ -1,8 +1,8 @@
 name: Claude match storms
 
 # Daily (after the deterministic check): use Claude Code to research the storm
-# allocations still without a SID, then apply only the high-confidence,
-# validated matches to the blob. Needs the CLAUDE_CODE_OAUTH_TOKEN secret
+# allocations still without a SID, then apply only the high-confidence, validated
+# matches to the DB (aa.cerf_* tables). Needs the CLAUDE_CODE_OAUTH_TOKEN secret
 # (generate with `claude setup-token`).
 on:
   schedule:
@@ -30,7 +30,6 @@ jobs:
           PGSSLMODE: require
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          DSCI_AZ_BLOB_DEV_SAS: ${{ secrets.DSCI_AZ_BLOB_DEV_SAS }}
           DSCI_AZ_DB_DEV_HOST: ${{ secrets.DSCI_AZ_DB_DEV_HOST }}
           DSCI_AZ_DB_DEV_UID: ${{ secrets.DSCI_AZ_DB_DEV_UID }}
           DSCI_AZ_DB_DEV_PW: ${{ secrets.DSCI_AZ_DB_DEV_PW }}
@@ -52,9 +51,9 @@ jobs:
           PGSSLMODE: require
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          DSCI_AZ_BLOB_DEV_SAS: ${{ secrets.DSCI_AZ_BLOB_DEV_SAS }}
-          DSCI_AZ_BLOB_DEV_SAS_WRITE: ${{ secrets.DSCI_AZ_BLOB_DEV_SAS_WRITE }}
           DSCI_AZ_DB_DEV_HOST: ${{ secrets.DSCI_AZ_DB_DEV_HOST }}
           DSCI_AZ_DB_DEV_UID: ${{ secrets.DSCI_AZ_DB_DEV_UID }}
           DSCI_AZ_DB_DEV_PW: ${{ secrets.DSCI_AZ_DB_DEV_PW }}
+          DSCI_AZ_DB_DEV_UID_WRITE: ${{ secrets.DSCI_AZ_DB_DEV_UID_WRITE }}
+          DSCI_AZ_DB_DEV_PW_WRITE: ${{ secrets.DSCI_AZ_DB_DEV_PW_WRITE }}
         run: uv run --no-sync python scripts/apply_claude_matches.py

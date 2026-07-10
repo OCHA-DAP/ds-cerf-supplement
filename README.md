@@ -8,16 +8,31 @@ Two automated pieces (no interactive app):
 1. **Daily storm-SID check** ([workflow](.github/workflows/check-storm-sids.yml)) — backfills SIDs that resolve unambiguously from the allocation title and opens a GitHub issue (tagging the maintainer) for the rest.
 2. **Static site** ([workflow](.github/workflows/deploy-site.yml)) — a lightweight page showing which CERF allocation matched which storm, regenerated from the data and deployed to Pages. → **https://ocha-dap.github.io/ds-cerf-supplement/**
 
-Annotations are written to a parquet file in blob storage. SIDs are added by the
-daily check; anything it can't resolve is filled manually (e.g. via `scripts/`
-or a quick script) keyed by `ApplicationCode`.
+Annotations live in the **dev DB** (schema `aa`), next to the KB's
+`aa.cerf_allocation` feed. SIDs are added by the daily check; anything it can't
+resolve is filled by the Claude matcher or manually, keyed by `ApplicationCode`.
 
-## Blob storage
+## Storage (dev DB, schema `aa`)
 
-- Container: `global`, stage: `dev`
-- Path: `cerf/cerf_supplemental_data.parquet`
-- Schema: `ApplicationCode` (unique key), `sids` (JSON list of IBTrACS SIDs — supports multiple storms, e.g. Haiti 2008 = Fay/Gustav/Hanna/Ike), `valid_month_start`, `valid_year_start`, `valid_month_end`, `valid_year_end`, `notes`, `updated_at`
-- Keyed on `ApplicationCode`, **not** `ApplicationID` — the CERF feed reuses `ApplicationID` across unrelated allocations.
+Source of truth is the DB (not a blob) — the matches are mutable, row-level
+records, and they join to the rest of the AA data:
+
+- `aa.cerf_allocation_storm (application_code, sid)` — one row per matched storm (multi-storm friendly, e.g. Haiti 2008 = Fay/Gustav/Hanna/Ike)
+- `aa.cerf_supplement (application_code, not_tc, valid_month_start, valid_year_start, valid_month_end, valid_year_end, notes, updated_at)`
+
+Both keyed on `ApplicationCode` (**not** `ApplicationID` — reused across unrelated
+allocations in the feed). One join gives allocation × storm × track:
+
+```sql
+SELECT a.country_name, a.year, i.name, i.season
+FROM aa.cerf_allocation_storm s
+JOIN aa.cerf_allocation  a USING (application_code)
+JOIN storms.ibtracs_storms i USING (sid);
+```
+
+`src/storage.py` reads/writes these tables (same DataFrame API as before). The
+old blob parquet (`global/cerf/cerf_supplemental_data.parquet`) is retired;
+`scripts/migrate_blob_to_db.py` did the one-off migration.
 
 ## Blob storage
 
@@ -37,9 +52,10 @@ python scripts/export_site_data.py     # build site/data.json
 python -m http.server -d site 8000     # preview the page at localhost:8000
 ```
 
-Env vars (see `.env.example`): `DSCI_AZ_BLOB_DEV_SAS` (+ `_WRITE` to backfill),
-`DSCI_AZ_DB_DEV_HOST` / `_UID` / `_PW`, and `PGSSLMODE=require`. The DB connection
-uses `ocha_stratus.get_engine()` — standard OCHA stratus setup applies.
+Env vars (see `.env.example`): `DSCI_AZ_DB_DEV_HOST` / `_UID` / `_PW` (read),
+`DSCI_AZ_DB_DEV_UID_WRITE` / `_PW_WRITE` (to save annotations), and
+`PGSSLMODE=require`. The DB connection uses `ocha_stratus.get_engine()` — standard
+OCHA stratus setup applies.
 
 ## The static site
 
@@ -67,8 +83,8 @@ basin) and will never be in IBTrACS — and **auto-closes** the GitHub issue for
 any allocation once it's resolved (SID assigned or flagged `not_tc`).
 
 Required repo **secrets** (Settings → Secrets and variables → Actions):
-`DSCI_AZ_BLOB_DEV_SAS`, `DSCI_AZ_BLOB_DEV_SAS_WRITE`, `DSCI_AZ_DB_DEV_HOST`,
-`DSCI_AZ_DB_DEV_UID`, `DSCI_AZ_DB_DEV_PW`. (`GITHUB_TOKEN` is provided automatically.)
+`DSCI_AZ_DB_DEV_HOST`, `DSCI_AZ_DB_DEV_UID`, `DSCI_AZ_DB_DEV_PW`,
+`DSCI_AZ_DB_DEV_UID_WRITE`, `DSCI_AZ_DB_DEV_PW_WRITE`. (`GITHUB_TOKEN` is provided automatically.)
 
 ## Daily Claude matcher (GitHub Actions)
 
@@ -79,7 +95,7 @@ research to identify the specific storm(s):
 
 1. `scripts/prepare_claude_input.py` writes the unresolved allocations + their candidate IBTrACS storms to `claude_work/unresolved.json`.
 2. Claude Code (tools limited to Read/Write/WebSearch/WebFetch — **no** blob/DB access) researches and writes `claude_work/matches.json`.
-3. `scripts/apply_claude_matches.py` validates each match (SID exists in IBTrACS, season within ±1 year) and writes only **confidence ≥ 0.8** results to the blob (as SID(s) or `not_tc`); lower-confidence suggestions are posted as comments on the open issue for you to review.
+3. `scripts/apply_claude_matches.py` validates each match (SID exists in IBTrACS, season within ±1 year) and writes only **confidence ≥ 0.8** results to the DB (as SID(s) or `not_tc`); lower-confidence suggestions are posted as comments on the open issue for you to review.
 
 Needs one extra secret: **`CLAUDE_CODE_OAUTH_TOKEN`** (generate locally with
 `claude setup-token`, then add it under Settings → Secrets → Actions).
@@ -101,6 +117,8 @@ scripts/
   check_storm_sids.py     # Daily: backfill title-resolvable SIDs, manage issues
   prepare_claude_input.py # Daily: dump unresolved allocations + candidates
   apply_claude_matches.py # Daily: validate + apply Claude's high-confidence matches
+  raise_review_issues.py  # One-off: open review issues for low-confidence matches
+  migrate_blob_to_db.py   # One-off: moved the supplement from blob → DB
   seed_from_existing.py   # One-off: rebuild SIDs from the tropicalcyclones CSV
   fill_guessed_sids.py    # One-off: high-confidence SID guesses from titles
   finalize_storms.py      # One-off: flag not_tc + summary-based matches

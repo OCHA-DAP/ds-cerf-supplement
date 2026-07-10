@@ -1,17 +1,34 @@
+"""
+Supplemental CERF↔storm data, stored in the dev DB (schema `aa`), alongside the
+KB's `aa.cerf_allocation` feed. Two normalized tables:
+
+  aa.cerf_allocation_storm(application_code, sid)   -- one row per matched storm
+  aa.cerf_supplement(application_code, not_tc, valid_month_start, valid_year_start,
+                     valid_month_end, valid_year_end, notes, updated_at)
+
+Keyed on ApplicationCode (ApplicationID is NOT unique in the CERF feed). Joinable
+to aa.cerf_allocation and storms.ibtracs_storms.
+
+The public API (load/save/upsert/remove + encode/decode/is_resolved) is unchanged:
+callers work with a DataFrame whose `sids` column is a JSON list string, exactly
+as before — only the backing store moved from blob parquet to the DB.
+"""
+
 import json
+import os
 from datetime import datetime, timezone
 
 import pandas as pd
 import ocha_stratus as stratus
+from sqlalchemy import text
 
-BLOB_NAME = "cerf/cerf_supplemental_data.parquet"
-STAGE = "dev"
-CONTAINER = "global"
+os.environ.setdefault("PGSSLMODE", "require")
 
+SCHEMA = "aa"
 _COLUMNS = [
-    "ApplicationCode",  # unique key (ApplicationID is NOT unique in the feed)
-    "sids",  # JSON-encoded list of IBTrACS SIDs, e.g. '["sid1", "sid2"]'
-    "not_tc",  # True = storm allocation that is definitely NOT a tropical cyclone
+    "ApplicationCode",
+    "sids",
+    "not_tc",
     "valid_month_start",
     "valid_year_start",
     "valid_month_end",
@@ -19,20 +36,16 @@ _COLUMNS = [
     "notes",
     "updated_at",
 ]
-
-# a fully-resolved row has either storm(s) assigned or is flagged not-a-TC
-def is_resolved(row) -> bool:
-    return bool(decode_sids(row.get("sids"))) or bool(row.get("not_tc"))
+_SUPP_COLS = ["not_tc", "valid_month_start", "valid_year_start",
+              "valid_month_end", "valid_year_end", "notes"]
 
 
 def encode_sids(sids: list[str] | None) -> str | None:
-    """List of SIDs -> JSON string (or None if empty)."""
     sids = [s for s in (sids or []) if s]
     return json.dumps(sids) if sids else None
 
 
 def decode_sids(value) -> list[str]:
-    """JSON string (or legacy scalar) -> list of SIDs."""
     if value is None or (isinstance(value, float) and pd.isna(value)):
         return []
     if isinstance(value, list):
@@ -44,32 +57,93 @@ def decode_sids(value) -> list[str]:
         parsed = json.loads(s)
         return [x for x in parsed if x] if isinstance(parsed, list) else [s]
     except (json.JSONDecodeError, TypeError):
-        return [s]  # legacy single-SID string
+        return [s]
 
 
-def _migrate(df: pd.DataFrame) -> pd.DataFrame:
-    """Bring an older-schema frame up to date in-memory."""
-    if "sids" not in df.columns and "sid" in df.columns:
-        df = df.copy()
-        df["sids"] = df["sid"].apply(lambda s: encode_sids([s]) if pd.notna(s) else None)
-        df = df.drop(columns=["sid"])
-    for col in _COLUMNS:
-        if col not in df.columns:
-            df[col] = None
-    return df[_COLUMNS]
+def is_resolved(row) -> bool:
+    return bool(decode_sids(row.get("sids"))) or bool(row.get("not_tc"))
+
+
+def ensure_tables() -> None:
+    with stratus.get_engine(write=True).begin() as conn:
+        conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}"))
+        conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA}.cerf_supplement (
+                application_code   text PRIMARY KEY,
+                not_tc             boolean,
+                valid_month_start  integer,
+                valid_year_start   integer,
+                valid_month_end    integer,
+                valid_year_end     integer,
+                notes              text,
+                updated_at         timestamptz
+            )"""))
+        conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS {SCHEMA}.cerf_allocation_storm (
+                application_code text NOT NULL,
+                sid              text NOT NULL,
+                updated_at       timestamptz,
+                PRIMARY KEY (application_code, sid)
+            )"""))
 
 
 def load_supplemental() -> pd.DataFrame:
-    try:
-        return _migrate(
-            stratus.load_parquet_from_blob(BLOB_NAME, stage=STAGE, container_name=CONTAINER)
-        )
-    except Exception:
-        return pd.DataFrame(columns=_COLUMNS)
+    """Read the two tables back into the legacy DataFrame shape."""
+    engine = stratus.get_engine()
+    with engine.connect() as conn:
+        supp = pd.read_sql(text(f"SELECT * FROM {SCHEMA}.cerf_supplement"), conn)
+        links = pd.read_sql(
+            text(f"SELECT application_code, sid FROM {SCHEMA}.cerf_allocation_storm"), conn)
+
+    sids_by_code: dict[str, list[str]] = {}
+    for _, r in links.iterrows():
+        sids_by_code.setdefault(r["application_code"], []).append(r["sid"])
+
+    codes = set(supp["application_code"]) | set(sids_by_code)
+    supp_by_code = {r["application_code"]: r for _, r in supp.iterrows()}
+    rows = []
+    for code in codes:
+        s = supp_by_code.get(code)
+        rows.append({
+            "ApplicationCode": code,
+            "sids": encode_sids(sids_by_code.get(code, [])),
+            "not_tc": (bool(s["not_tc"]) if s is not None and pd.notna(s["not_tc"]) else None),
+            "valid_month_start": s["valid_month_start"] if s is not None else None,
+            "valid_year_start": s["valid_year_start"] if s is not None else None,
+            "valid_month_end": s["valid_month_end"] if s is not None else None,
+            "valid_year_end": s["valid_year_end"] if s is not None else None,
+            "notes": s["notes"] if s is not None else None,
+            "updated_at": s["updated_at"] if s is not None else None,
+        })
+    return pd.DataFrame(rows, columns=_COLUMNS)
 
 
 def save_supplemental(df: pd.DataFrame) -> None:
-    stratus.upload_parquet_to_blob(df, BLOB_NAME, stage=STAGE, container_name=CONTAINER)
+    """Transactional full replace of both tables from the DataFrame."""
+    def _i(v):
+        return int(v) if pd.notna(v) and str(v).strip() not in ("", "nan") else None
+
+    with stratus.get_engine(write=True).begin() as conn:
+        conn.execute(text(f"DELETE FROM {SCHEMA}.cerf_allocation_storm"))
+        conn.execute(text(f"DELETE FROM {SCHEMA}.cerf_supplement"))
+        for _, r in df.iterrows():
+            code = r["ApplicationCode"]
+            ts = r.get("updated_at") or datetime.now(timezone.utc)
+            conn.execute(text(f"""
+                INSERT INTO {SCHEMA}.cerf_supplement
+                  (application_code, not_tc, valid_month_start, valid_year_start,
+                   valid_month_end, valid_year_end, notes, updated_at)
+                VALUES (:c, :nt, :ms, :ys, :me, :ye, :n, :ts)"""), {
+                "c": code,
+                "nt": bool(r["not_tc"]) if pd.notna(r.get("not_tc")) else None,
+                "ms": _i(r.get("valid_month_start")), "ys": _i(r.get("valid_year_start")),
+                "me": _i(r.get("valid_month_end")), "ye": _i(r.get("valid_year_end")),
+                "n": (r.get("notes") or None), "ts": ts,
+            })
+            for sid in decode_sids(r["sids"]):
+                conn.execute(text(f"""
+                    INSERT INTO {SCHEMA}.cerf_allocation_storm (application_code, sid, updated_at)
+                    VALUES (:c, :s, :ts)"""), {"c": code, "s": sid, "ts": ts})
 
 
 def upsert_annotation(supp_df: pd.DataFrame, app_code: str, annotation: dict) -> pd.DataFrame:
