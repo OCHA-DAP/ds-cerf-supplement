@@ -55,8 +55,8 @@ def main(write: bool):
     sid_name = dict(zip(load_storms.__wrapped__()["sid"], load_storms.__wrapped__()["name"]))
     supp = load_supplemental()
     sids_map = {r["ApplicationCode"]: decode_sids(r["sids"]) for _, r in supp.iterrows()}
-    # skip only if an issue is currently OPEN (a prior closed one shouldn't block)
-    open_codes = set(chk.open_issues_by_code()) if chk.TOKEN else set()
+    # {code: issue_number} for currently-open issues (refresh these in place)
+    open_map = chk.open_issues_by_code() if chk.TOKEN else {}
 
     if write and chk.TOKEN:
         chk.ensure_label()
@@ -65,15 +65,15 @@ def main(write: bool):
                       "description": "Existing match flagged for human review"})
 
     for code, reason in REVIEW.items():
-        if code in open_codes:
-            print(f"  skip (open issue exists) {code}")
-            continue
         a = cerf.loc[code]
         cur = sids_map.get(code, [])
-        cur_txt = ", ".join(f"{sid_name.get(s, s)} (`{s}`)" for s in cur) or "—"
+        cur_txt = ", ".join(
+            f"{sid_name.get(s, s)} ([`{s}`]({chk.ibtracs_url(s)}))" for s in cur
+        ) or "—"
         body = (
             f"⚠️ **Please double-check this existing match.** @{chk.ASSIGNEE}\n\n"
             f"- **Code:** `{code}`\n"
+            f"- **CERF page:** {chk.cerf_url(code, int(a['Year']))}\n"
             f"- **Country / Year:** {a['CountryName']} {int(a['Year'])}\n"
             f"- **Title:** {a['ApplicationTitle']}\n"
             f"- **Currently matched to:** {cur_txt}\n\n"
@@ -83,13 +83,18 @@ def main(write: bool):
             f"reads your comment and updates the data, then closes this issue."
         )
         title = f"[CERF SID] review — {code} ({a['CountryName']} {int(a['Year'])})"
-        print(f"  REVIEW {code}")
-        if write and chk.TOKEN:
+        if not (write and chk.TOKEN):
+            print(f"  REVIEW {code} (dry run)")
+            continue
+        if code in open_map:  # refresh existing issue body (e.g. updated links)
+            chk._gh("PATCH", f"/repos/{chk.REPO}/issues/{open_map[code]}", json={"body": body})
+            print(f"  UPDATE #{open_map[code]} {code}")
+        else:
             r = chk._gh("POST", f"/repos/{chk.REPO}/issues",
                         json={"title": title, "body": body,
                               "labels": [chk.LABEL, "review"], "assignees": [chk.ASSIGNEE]})
             r.raise_for_status()
-            print(f"         {r.json()['html_url']}")
+            print(f"  CREATE {code} → {r.json()['html_url']}")
 
     if not (write and chk.TOKEN):
         print("\n(dry run or no token — pass --write with GITHUB_TOKEN set)")

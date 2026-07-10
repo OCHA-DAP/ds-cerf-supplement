@@ -159,6 +159,15 @@ def user_comments_by_code() -> dict[str, list[str]]:
     return out
 
 
+# ---------------------------------------------------------------- links
+def cerf_url(code: str, year) -> str:
+    return f"https://cerf.un.org/what-we-do/allocation/{year}/summary/{code}"
+
+
+def ibtracs_url(sid: str) -> str:
+    return f"https://ncics.org/ibtracs/index.php?name=v04r01-{sid}"
+
+
 # ---------------------------------------------------------------- issue body
 def research_links(names: list[str], country: str, year) -> str:
     lines = []
@@ -174,7 +183,7 @@ def candidate_table(names: list[str], by_name: dict) -> str:
     rows = []
     for name in names:
         for sid, season, basin in by_name.get(name.upper(), []):
-            rows.append(f"| {name} | {season} | `{sid}` | {basin} |")
+            rows.append(f"| {name} | {season} | [`{sid}`]({ibtracs_url(sid)}) | {basin} |")
     if not rows:
         return "_No IBTrACS storms found matching the name(s) in the title._"
     return "| Name | Season | SID | Basin |\n|---|---|---|---|\n" + "\n".join(rows)
@@ -192,6 +201,7 @@ def build_body(alloc, names, problems, resolved, by_name) -> str:
         "",
         "### Allocation",
         f"- **Code:** `{alloc['ApplicationCode']}`",
+        f"- **CERF page:** {cerf_url(alloc['ApplicationCode'], alloc['Year'])}",
         f"- **Country:** {alloc['CountryName']}",
         f"- **Year:** {alloc['Year']}",
         f"- **Amount:** {amount_s}",
