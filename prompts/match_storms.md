@@ -9,6 +9,13 @@ by their IBTrACS Storm ID (SID).
    `user_comments` (see below), and `candidates` (IBTrACS storms within ±1 year
    of the allocation year, each with `sid`, `name`, `season`, `basin`).
 
+   Some allocations carry a `current_match` (SID/name already assigned). If it's
+   non-empty, this is an **existing match being reviewed** — only act if the
+   `user_comments` tell you to. If the human confirms it's correct, return the
+   same SID(s) at `confidence` ≥ 0.9 (this re-affirms it and closes the issue).
+   If they correct it, return the corrected SID(s)/`not_tc`. If there are no
+   comments, return low confidence and change nothing.
+
    **`user_comments` are authoritative human guidance** left on the GitHub
    issue. If present, follow them over your own reasoning:
    - If the human names a storm / gives a SID, use it (map the name to the

@@ -313,16 +313,20 @@ def main(write: bool):
     # --- close issues that shouldn't stay open ---
     # Keep open only issues for allocations still in scope and unresolved
     # (i.e. the ones we just flagged). Everything else — resolved, or now
-    # out of scope (e.g. Underfunded) — gets closed.
+    # out of scope (e.g. Underfunded) — gets closed. 'review' issues (manual
+    # double-checks of existing matches) are left for the human / correction flow.
     closed = 0
     if write and TOKEN:
         keep_open = {alloc["ApplicationCode"] for alloc, _, _, _ in to_flag}
-        for code, number in open_issues_by_code().items():
-            if code not in keep_open:
-                close_issue(number, "✅ Closing automatically — this allocation is "
-                                    "now resolved (SID assigned / flagged not-a-TC) "
-                                    "or out of scope (Underfunded Emergencies).")
-                print(f"  CLOSE #{number} {code}")
+        for issue in _issues("open"):
+            if "review" in {lbl["name"] for lbl in issue.get("labels", [])}:
+                continue
+            m = CODE_RE.search(issue.get("title", ""))
+            if m and m.group(1) not in keep_open:
+                close_issue(issue["number"], "✅ Closing automatically — this "
+                            "allocation is now resolved (SID assigned / flagged "
+                            "not-a-TC) or out of scope (Underfunded Emergencies).")
+                print(f"  CLOSE #{issue['number']} {m.group(1)}")
                 closed += 1
 
     summary = (f"Storm SID check: {len(filled)} backfilled, "
