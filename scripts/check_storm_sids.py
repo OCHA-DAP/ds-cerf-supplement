@@ -135,6 +135,30 @@ def close_issue(number: int, comment: str):
     _gh("PATCH", f"/repos/{REPO}/issues/{number}", json={"state": "closed"})
 
 
+def user_comments_by_code() -> dict[str, list[str]]:
+    """Human comments on open issues, keyed by ApplicationCode.
+
+    Excludes bot comments (github-actions) and the automation's own markers
+    (🤖 suggestions, ✅ close notes) so only real human guidance is returned.
+    """
+    out: dict[str, list[str]] = {}
+    for issue in _issues("open"):
+        m = CODE_RE.search(issue.get("title", ""))
+        if not m:
+            continue
+        r = _gh("GET", f"/repos/{REPO}/issues/{issue['number']}/comments",
+                params={"per_page": 100})
+        r.raise_for_status()
+        texts = [
+            c["body"].strip() for c in r.json()
+            if not c.get("user", {}).get("login", "").endswith("[bot]")
+            and not c.get("body", "").lstrip().startswith(("🤖", "✅"))
+        ]
+        if texts:
+            out[m.group(1)] = texts
+    return out
+
+
 # ---------------------------------------------------------------- issue body
 def research_links(names: list[str], country: str, year) -> str:
     lines = []

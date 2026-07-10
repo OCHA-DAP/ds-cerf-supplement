@@ -16,6 +16,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.cerf_api import classify_type, fetch_cerf_allocations  # noqa: E402
 from src.db import load_storms  # noqa: E402
 from src.storage import is_resolved, load_supplemental  # noqa: E402
+import scripts.check_storm_sids as chk  # noqa: E402
 
 OUT = Path(__file__).parent.parent / "claude_work" / "unresolved.json"
 
@@ -24,6 +25,9 @@ def main():
     cerf = fetch_cerf_allocations.__wrapped__()
     storms = load_storms.__wrapped__().dropna(subset=["name"])
     supp = load_supplemental()
+
+    # Human guidance left as comments on the open issues (authoritative).
+    comments = chk.user_comments_by_code() if chk.TOKEN else {}
 
     resolved = {r["ApplicationCode"] for _, r in supp.iterrows() if is_resolved(r)} if not supp.empty else set()
     cerf["_type"] = cerf["EmergencyTypeName"].map(classify_type)
@@ -53,12 +57,15 @@ def main():
             "type": a["EmergencyTypeName"],
             "title": a["ApplicationTitle"],
             "summary": (a.get("CN_Summary") or "").strip()[:1500],
+            "user_comments": comments.get(a["ApplicationCode"], []),
             "candidates": cands,
         })
 
     OUT.parent.mkdir(parents=True, exist_ok=True)
     OUT.write_text(json.dumps({"allocations": allocations}, indent=1))
-    print(f"Wrote {len(allocations)} unresolved allocations to {OUT}")
+    n_guided = sum(1 for x in allocations if x["user_comments"])
+    print(f"Wrote {len(allocations)} unresolved allocations to {OUT} "
+          f"({n_guided} with human guidance)")
 
 
 if __name__ == "__main__":

@@ -66,13 +66,19 @@ def main():
         valid = sids and not bad
 
         if conf >= THRESHOLD and (valid or (not_tc and not sids)):
+            flagged_not_tc = not_tc and not sids
             supp = upsert_annotation(supp, code, {
-                "sids": encode_sids(sids), "not_tc": (not_tc and not sids) or None,
+                "sids": encode_sids(sids), "not_tc": flagged_not_tc or None,
                 "valid_month_start": None, "valid_year_start": None,
                 "valid_month_end": None, "valid_year_end": None, "notes": None,
             })
             applied += 1
-            print(f"  APPLY {code:22s} conf={conf:.2f} sids={sids} not_tc={not_tc and not sids}")
+            print(f"  APPLY {code:22s} conf={conf:.2f} sids={sids} not_tc={flagged_not_tc}")
+            # close the issue right away with a confirmation
+            if chk.TOKEN and code in open_issues:
+                what = "flagged not-a-TC" if flagged_not_tc else f"assigned {', '.join(sids)}"
+                chk.close_issue(open_issues[code],
+                                f"✅ {what} (confidence {conf:.0%}).\n\n{reason}")
         else:
             skipped += 1
             why = "bad SID(s)" if bad else ("low confidence" if conf < THRESHOLD else "no decision")

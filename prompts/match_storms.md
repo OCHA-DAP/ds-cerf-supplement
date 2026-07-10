@@ -6,8 +6,20 @@ by their IBTrACS Storm ID (SID).
 
 1. Read `claude_work/unresolved.json`. It contains a list of `allocations`,
    each with: `code`, `country`, `year`, `amount`, `type`, `title`, `summary`,
-   and `candidates` (IBTrACS storms within ±1 year of the allocation year, each
-   with `sid`, `name`, `season`, `basin`).
+   `user_comments` (see below), and `candidates` (IBTrACS storms within ±1 year
+   of the allocation year, each with `sid`, `name`, `season`, `basin`).
+
+   **`user_comments` are authoritative human guidance** left on the GitHub
+   issue. If present, follow them over your own reasoning:
+   - If the human names a storm / gives a SID, use it (map the name to the
+     matching candidate SID) and set `confidence` ≥ 0.9.
+   - If the human says it's not a tropical cyclone (tornado, flood, winter
+     storm, etc.), set `not_tc: true`, `confidence` ≥ 0.9.
+   - If the human says to leave it / it's unclear / the storm isn't archived
+     yet, return low confidence so it stays open.
+   - Only if their instruction can't be satisfied (e.g. the SID/storm they
+     name isn't in `candidates`) do you keep confidence low and explain in
+     `reasoning` what the mismatch is.
 
 2. For each allocation, decide which tropical cyclone(s) it responded to:
    - Use the title and summary first. Use **web search** to confirm which
