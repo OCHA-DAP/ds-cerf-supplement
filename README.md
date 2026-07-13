@@ -117,7 +117,7 @@ site/
 src/
   cerf_api.py           # Fetch + parse OneGMS XML → DataFrame
   db.py                 # Load storms from storms.ibtracs_storms
-  storage.py            # Read/write supplemental parquet via ocha-stratus
+  storage.py            # Read/write aa.cerf_supplement + aa.cerf_allocation_storm (dev DB)
 prompts/
   match_storms.md       # Instructions for the daily Claude matcher
 scripts/
