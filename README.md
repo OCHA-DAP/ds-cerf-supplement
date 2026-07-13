@@ -37,13 +37,12 @@ old blob parquet (`global/cerf/cerf_supplemental_data.parquet`) is retired;
 
 ### The `aa.cerf_allocation` mirror
 
-The storm tables join to `aa.cerf_allocation` — a pure mirror of the OneGMS feed.
-`scripts/refresh_mirror.py` keeps it current with a daily **upsert** (feed columns
-+ the deterministic `aa_keyword`), keyed on `ApplicationCode`. It deliberately does
-**not** touch the KB-curated `aa_adhoc` / `aa_note` columns or the AA-link tables
-(`aa.actual_activation` / `aa.activation_allocation`) — those stay owned by the KB's
-`scripts/load_aa_cerf.py`, which is run by hand after new AA activations. Both read
-the same feed, so the two writers coexist without clobbering each other.
+The storm tables join to `aa.cerf_allocation` — a **pure mirror** of the OneGMS feed,
+and this repo is its **sole writer**: `scripts/refresh_mirror.py` keeps it current with
+a daily **upsert** (feed columns + the deterministic `aa_keyword`), keyed on
+`ApplicationCode`. Everything AA-interpretive lives in separate KB-owned tables
+(`aa.actual_activation` + the curated `aa.activation_allocation` crosswalk, maintained
+by ds-knowledge-base's `aa-links` confirm flow) — this script never touches those.
 
 ## Local setup
 

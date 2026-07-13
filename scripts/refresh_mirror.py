@@ -5,15 +5,12 @@ pure OneGMS mirror) current so newly-published allocations become matchable. The
 storm tables (`aa.cerf_allocation_storm`, `aa.cerf_supplement`) and every matcher
 join to this table on `application_code`.
 
-Coexistence with the KB loader (ds-knowledge-base `scripts/load_aa_cerf.py`):
-  - `aa.cerf_allocation`'s schema is canonically OWNED by the KB loader, which also
-    builds the AA layer (`aa.actual_activation` / `aa.activation_allocation`) and sets
-    the curated `aa_adhoc` / `aa_note` flags. Run it by hand after new activations.
-  - This script writes ONLY the feed-derived columns (+ the deterministic `aa_keyword`)
-    via an idempotent UPSERT keyed on `application_code`. It deliberately does NOT touch
-    `aa_adhoc` / `aa_note` (preserved on conflict) and never touches the AA-link tables,
-    so the two writers don't clobber each other — both read the same OneGMS feed, and
-    KB curation survives a daily refresh.
+`aa.cerf_allocation` is a PURE mirror and this script is its SOLE writer: feed-derived
+columns + the deterministic `aa_keyword` title flag, idempotently UPSERTED keyed on
+`application_code`. Everything AA-interpretive lives in separate KB-owned tables
+(`aa.actual_activation`, `aa.activation_allocation` — the curated crosswalk incl.
+ad-hoc flags, maintained by ds-knowledge-base's aa-links confirm flow); this script
+never touches those.
 
 Keyed on ApplicationCode; ApplicationID is NOT unique in the feed (~431 collisions).
 
@@ -32,8 +29,8 @@ CERF_API_URL = "https://cerfgms-webapi.unocha.org/v1/application/All.xml"
 SCHEMA = "aa"
 AA_KEYWORDS = ("anticipat", "early action")
 
-# Feed-derived columns written on every refresh (matches ds-knowledge-base
-# load_aa_cerf.py). aa_adhoc / aa_note are KB-curated and deliberately excluded.
+# Feed-derived columns written on every refresh — the mirror's full column set
+# (plus the deterministic aa_keyword).
 FEED_COLUMNS = [
     "application_code", "application_id", "year", "country_iso3", "country_name",
     "region_name", "window_name", "emergency_type", "emergency_group", "title",
@@ -44,8 +41,8 @@ FEED_COLUMNS = [
     "allocation_rationale",
 ]
 
-# Canonical schema lives in the KB loader; kept here (IF NOT EXISTS) so a fresh dev DB
-# works. No-op when the table already exists.
+# The mirror's canonical schema (this script owns the table). IF NOT EXISTS — no-op
+# when the table already exists.
 DDL = f"""
 create schema if not exists {SCHEMA};
 create table if not exists {SCHEMA}.cerf_allocation (
@@ -71,14 +68,10 @@ create table if not exists {SCHEMA}.cerf_allocation (
     last_project_approved_date  date,
     report_due_date             date,
     aa_keyword          boolean not null default false,
-    aa_adhoc            boolean not null default false,
-    aa_note             text,
     summary             text,
     humanitarian_overview text,
     allocation_rationale  text
 );
-alter table {SCHEMA}.cerf_allocation add column if not exists aa_adhoc boolean not null default false;
-alter table {SCHEMA}.cerf_allocation add column if not exists aa_note text;
 """
 
 
@@ -187,7 +180,7 @@ def main():
         c.execute(insert_sql, payload)
         after = c.execute(text(f"select count(*) from {SCHEMA}.cerf_allocation")).scalar()
     print(f"mirror upserted: {len(rows)} feed rows applied · table {before} -> {after} rows "
-          f"(+{after - before} new; aa_adhoc/aa_note preserved)")
+          f"(+{after - before} new)")
 
 
 if __name__ == "__main__":
