@@ -1,0 +1,38 @@
+name: Refresh OneGMS mirror
+
+# Daily upstream of every matcher: refresh the pure OneGMS mirror aa.cerf_allocation
+# from the CERF feed (idempotent upsert; preserves KB-curated aa_adhoc/aa_note). On
+# success this triggers the matcher workflows via workflow_run — so a new allocation
+# is mirrored first, then matched. Also runnable on demand.
+on:
+  schedule:
+    - cron: "30 5 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  refresh-mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install
+        # --no-sources ignores the local-path ocha-stratus override in pyproject
+        # (local dev only) and pulls it from PyPI instead.
+        run: |
+          uv venv --python 3.12
+          uv pip install --no-sources -e .
+
+      - name: Refresh aa.cerf_allocation
+        env:
+          PGSSLMODE: require
+          DSCI_AZ_DB_DEV_HOST: ${{ secrets.DSCI_AZ_DB_DEV_HOST }}
+          DSCI_AZ_DB_DEV_UID: ${{ secrets.DSCI_AZ_DB_DEV_UID }}
+          DSCI_AZ_DB_DEV_PW: ${{ secrets.DSCI_AZ_DB_DEV_PW }}
+          DSCI_AZ_DB_DEV_UID_WRITE: ${{ secrets.DSCI_AZ_DB_DEV_UID_WRITE }}
+          DSCI_AZ_DB_DEV_PW_WRITE: ${{ secrets.DSCI_AZ_DB_DEV_PW_WRITE }}
+        run: uv run --no-sync python scripts/refresh_mirror.py
