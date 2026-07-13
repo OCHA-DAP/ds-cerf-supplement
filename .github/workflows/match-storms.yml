@@ -1,0 +1,92 @@
+name: Match storms
+
+# The storm matcher. Runs after the OneGMS mirror refresh (workflow_run) so it always
+# matches against an up-to-date aa.cerf_allocation. Two stages:
+#   1. deterministic — backfill SIDs resolvable from the allocation title; open a
+#      cerf-sid issue (tagging the maintainer) for the rest; auto-close resolved ones.
+#   2. claude — Claude Code researches the still-unresolved allocations (summary + web),
+#      reads human replies on open issues (authoritative), applies only validated,
+#      high-confidence matches to the DB. Needs the CLAUDE_CODE_OAUTH_TOKEN secret.
+# More matchers (e.g. drought) can key off the same refresh-mirror completion.
+on:
+  workflow_run:
+    workflows: ["Refresh OneGMS mirror"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  deterministic:
+    # Only run when triggered manually or after a successful mirror refresh.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install
+        run: |
+          uv venv --python 3.12
+          uv pip install --no-sources -e .
+
+      - name: Check storm SIDs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          PGSSLMODE: require
+          DSCI_AZ_DB_DEV_HOST: ${{ secrets.DSCI_AZ_DB_DEV_HOST }}
+          DSCI_AZ_DB_DEV_UID: ${{ secrets.DSCI_AZ_DB_DEV_UID }}
+          DSCI_AZ_DB_DEV_PW: ${{ secrets.DSCI_AZ_DB_DEV_PW }}
+          DSCI_AZ_DB_DEV_UID_WRITE: ${{ secrets.DSCI_AZ_DB_DEV_UID_WRITE }}
+          DSCI_AZ_DB_DEV_PW_WRITE: ${{ secrets.DSCI_AZ_DB_DEV_PW_WRITE }}
+        run: uv run --no-sync python scripts/check_storm_sids.py --write
+
+  claude:
+    needs: deterministic
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install
+        run: |
+          uv venv --python 3.12
+          uv pip install --no-sources -e .
+
+      - name: Prepare unresolved allocations
+        env:
+          PGSSLMODE: require
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DSCI_AZ_DB_DEV_HOST: ${{ secrets.DSCI_AZ_DB_DEV_HOST }}
+          DSCI_AZ_DB_DEV_UID: ${{ secrets.DSCI_AZ_DB_DEV_UID }}
+          DSCI_AZ_DB_DEV_PW: ${{ secrets.DSCI_AZ_DB_DEV_PW }}
+        run: uv run --no-sync python scripts/prepare_claude_input.py
+
+      # Claude researches the allocations and writes claude_work/matches.json.
+      # Restricted to read/write/search tools — it cannot touch the DB; the apply
+      # step below does all validated writes.
+      - name: Claude research
+        uses: anthropics/claude-code-base-action@beta
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: "Read the file prompts/match_storms.md and follow its instructions exactly."
+          allowed_tools: "Read,Write,Edit,WebSearch,WebFetch"
+          model: "claude-sonnet-5"
+
+      - name: Apply high-confidence matches
+        env:
+          PGSSLMODE: require
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DSCI_AZ_DB_DEV_HOST: ${{ secrets.DSCI_AZ_DB_DEV_HOST }}
+          DSCI_AZ_DB_DEV_UID: ${{ secrets.DSCI_AZ_DB_DEV_UID }}
+          DSCI_AZ_DB_DEV_PW: ${{ secrets.DSCI_AZ_DB_DEV_PW }}
+          DSCI_AZ_DB_DEV_UID_WRITE: ${{ secrets.DSCI_AZ_DB_DEV_UID_WRITE }}
+          DSCI_AZ_DB_DEV_PW_WRITE: ${{ secrets.DSCI_AZ_DB_DEV_PW_WRITE }}
+        run: uv run --no-sync python scripts/apply_claude_matches.py

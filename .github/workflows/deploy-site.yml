@@ -1,11 +1,14 @@
 name: Deploy site
 
-# Builds site/data.json from the blob + DB and deploys the static page to
-# GitHub Pages. Runs daily (after the storm-SID check), on demand, and on push
-# to the site/script files.
+# Builds site/data.json from the DB and deploys the static page to GitHub Pages.
+# Runs after the storm matcher completes (workflow_run), on push to the site/script
+# files, on demand, and once daily as a backstop in case the chain doesn't fire.
 on:
+  workflow_run:
+    workflows: ["Match storms"]
+    types: [completed]
   schedule:
-    - cron: "30 6 * * *"
+    - cron: "0 8 * * *"
   workflow_dispatch:
   push:
     branches: [main]
