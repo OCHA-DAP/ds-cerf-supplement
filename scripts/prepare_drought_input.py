@@ -21,8 +21,10 @@ import pandas as pd
 
 os.environ.setdefault("PGSSLMODE", "require")
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.cerf_api import classify_type, fetch_cerf_allocations  # noqa: E402
-from src.storage import has_valid_period, load_supplemental  # noqa: E402
+from src.cerf_api import (  # noqa: E402
+    classify_type, fetch_cerf_allocations, fetch_project_titles,
+)
+from src.storage import is_drought_resolved, load_supplemental  # noqa: E402
 import scripts.check_storm_sids as chk  # noqa: E402
 
 LABEL = "cerf-drought"
@@ -46,7 +48,7 @@ def main():
     comments = chk.user_comments_by_code(label=LABEL) if chk.TOKEN else {}
     open_issues = chk.open_issues_by_code(label=LABEL) if chk.TOKEN else {}
     supp_by_code = {r["ApplicationCode"]: r for _, r in supp.iterrows()} if not supp.empty else {}
-    dated = {c for c, r in supp_by_code.items() if has_valid_period(r)}
+    dated = {c for c, r in supp_by_code.items() if is_drought_resolved(r)}
 
     cerf["_type"] = cerf["EmergencyTypeName"].map(classify_type)
     in_scope = cerf[(cerf["_type"] == "Drought") & (cerf["WindowFullName"] == "Rapid Response")]
@@ -64,6 +66,9 @@ def main():
     allocations = []
     for _, a in rows.iterrows():
         code = a["ApplicationCode"]
+        # project titles from the cerf.un.org page — often the only text naming
+        # the driver/season when the feed narratives are empty (pre-2013)
+        projects = fetch_project_titles(code, a["Year"])
         s = supp_by_code.get(code)
         current = None
         if s is not None and has_valid_period(s):
@@ -85,6 +90,7 @@ def main():
             "summary": _clip(a.get("CN_Summary"), 2000),
             "overview": _clip(a.get("OverviewoftheHumanitarianSituation"), 1200),
             "rationale": _clip(a.get("RationaleforCERFAllocation"), 1200),
+            "projects": projects,
             "current_period": current,
             "user_comments": comments.get(code, []),
         })

@@ -61,6 +61,7 @@ def main():
         s = supp_by_code.get(code)
         sids = decode_sids(s["sids"]) if s is not None else []
         not_tc = bool(s.get("not_tc")) if s is not None and pd.notna(s.get("not_tc")) else False
+        not_drought = bool(s.get("not_drought")) if s is not None and pd.notna(s.get("not_drought")) else False
         dated = s is not None and has_valid_period(s)
 
         # ---- storm row: storm allocations, plus anything storm-annotated
@@ -74,17 +75,18 @@ def main():
             rows.append({**base_row(a), "kind": "storm", "storms": storms_out,
                          "status": status, "matched": bool(storms_out)})
 
-        # ---- drought row: drought allocations, plus anything with a valid period
-        if a["_type"] == "Drought" or dated:
+        # ---- drought row: drought allocations, plus anything drought-annotated
+        if a["_type"] == "Drought" or dated or not_drought:
             valid = None
             if dated:
                 valid = {"ms": _i(s["valid_month_start"]), "ys": _i(s["valid_year_start"]),
                          "me": _i(s["valid_month_end"]), "ye": _i(s["valid_year_end"])}
             conf = s.get("confidence") if s is not None else None
+            status = "dated" if dated else ("not_drought" if not_drought else "needs_period")
             rows.append({**base_row(a), "kind": "drought", "valid": valid,
                          "confidence": float(conf) if conf is not None and pd.notna(conf) else None,
                          "notes": (s.get("notes") or None) if s is not None else None,
-                         "status": "dated" if dated else "needs_period"})
+                         "status": status})
 
     rows.sort(key=lambda r: (-(r["year"] or 0), r["country"] or ""))
 
@@ -96,7 +98,7 @@ def main():
     n = lambda st: sum(1 for r in rows if r["status"] == st)
     print(f"Wrote {len(rows)} rows ({n('matched')} matched, {n('not_tc')} not-a-TC, "
           f"{n('unmatched')} unmatched storms; {n('dated')} dated, "
-          f"{n('needs_period')} undated droughts) to {OUT}")
+          f"{n('not_drought')} not-a-drought, {n('needs_period')} undated droughts) to {OUT}")
 
 
 if __name__ == "__main__":

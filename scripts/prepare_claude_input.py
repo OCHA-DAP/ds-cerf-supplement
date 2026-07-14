@@ -17,7 +17,9 @@ import pandas as pd
 
 os.environ.setdefault("PGSSLMODE", "require")
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from src.cerf_api import classify_type, fetch_cerf_allocations  # noqa: E402
+from src.cerf_api import (  # noqa: E402
+    classify_type, fetch_cerf_allocations, fetch_project_titles,
+)
 from src.db import load_storms  # noqa: E402
 from src.storage import decode_sids, is_resolved, load_supplemental  # noqa: E402
 import scripts.check_storm_sids as chk  # noqa: E402
@@ -64,7 +66,8 @@ def main():
             "amount": float(a["TotalAmountApproved"]) if pd.notna(a["TotalAmountApproved"]) else None,
             "type": a["EmergencyTypeName"],
             "title": a["ApplicationTitle"],
-            "summary": (a.get("CN_Summary") or "").strip()[:1500],
+            "summary": (a.get("CN_Summary") if isinstance(a.get("CN_Summary"), str) else "").strip()[:1500],
+            "projects": fetch_project_titles(code, a["Year"]),
             "current_match": [{"sid": s, "name": sid_name.get(s)} for s in current],
             "user_comments": comments.get(code, []),
             "candidates": cands,

@@ -43,6 +43,48 @@ def fetch_cerf_allocations() -> pd.DataFrame:
     return df
 
 
+# cerf.un.org serves a "Projects included in this allocation" table (organization,
+# project title, code, amount) that the OneGMS All.xml feed doesn't carry. Project
+# titles often name the driver ("...affected by the conflict and the soaring
+# prices...") or the storm — useful when the narratives are empty (pre-2013).
+# The site 403s non-browser user agents, hence the UA header.
+_PAGE_UA = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"}
+_PROJECT_ROW_RE = None  # compiled lazily
+
+
+def fetch_project_titles(code: str, year) -> list[str]:
+    """Project titles for an allocation, scraped from its cerf.un.org summary page.
+
+    Returns [] on any failure — enrichment only, never a hard dependency."""
+    import re
+
+    global _PROJECT_ROW_RE
+    if _PROJECT_ROW_RE is None:
+        _PROJECT_ROW_RE = re.compile(r"<td[^>]*>(.*?)</td>", re.S)
+    url = f"https://cerf.un.org/what-we-do/allocation/{year}/summary/{code}"
+    try:
+        resp = requests.get(url, headers=_PAGE_UA, timeout=30)
+        resp.raise_for_status()
+    except requests.RequestException:
+        return []
+    m = re.search(r"Projects included in this allocation(.*?)</table>",
+                  resp.text, re.S)
+    if not m:
+        return []
+    cells = [re.sub(r"<[^>]+>|\s+", " ", c).strip()
+             for c in _PROJECT_ROW_RE.findall(m.group(1))]
+    # cell layout varies (org / title / Read more / amount / code ...) — keep the
+    # cells that look like project titles rather than relying on column position
+    _noise = re.compile(r"^(US ?\$|Read more$|\d{2}-[A-Z]{2,4}-\d+|[A-Z]{2,6}-\d)")
+    import html as _html
+    out, seen = [], set()
+    for c in cells:
+        if len(c) >= 25 and not _noise.match(c) and c not in seen:
+            seen.add(c)
+            out.append(_html.unescape(c))
+    return out
+
+
 STORM_KEYWORDS = {"cyclone", "hurricane", "typhoon", "tropical storm", "storm"}
 DROUGHT_KEYWORDS = {"drought"}
 

@@ -72,7 +72,7 @@ const CONFIG = {
   },
   drought: {
     cols: [["year","Year"],["country","Country"],["amount","Amount (USD)"],["code","Allocation"],["valid","Valid period"],["notes","Notes"]],
-    filters: [["all","All"],["dated","Dated"],["needs_period","Needs period"]],
+    filters: [["all","All"],["dated","Dated"],["needs_period","Needs period"],["not_drought","Not a drought"]],
     csvName: "cerf_drought_periods.csv",
   },
 };
@@ -89,6 +89,7 @@ function stormsHtml(r){
   return `<span class="none">— needs storm —</span>`;
 }
 function periodHtml(r){
+  if(r.status === "not_drought") return `<span class="nottc">not a meteorological drought</span>`;
   if(!r.valid) return `<span class="none">— needs period —</span>`;
   const conf = r.confidence != null ? `<br><span class="conf">conf ${Math.round(r.confidence*100)}%</span>` : "";
   return `<span class="period">${esc(periodText(r))}${conf}</span>`;
@@ -144,7 +145,7 @@ function render(){
   const c = s => inDs.filter(r => r.status === s).length;
   $("#stat").textContent = dataset === "storm"
     ? `${view.length} shown · ${c("matched")} matched · ${c("not_tc")} not-a-TC · ${c("unmatched")} need storm`
-    : `${view.length} shown · ${c("dated")} dated · ${c("needs_period")} need period`;
+    : `${view.length} shown · ${c("dated")} dated · ${c("not_drought")} not-a-drought · ${c("needs_period")} need period`;
 }
 
 function renderFilters(){

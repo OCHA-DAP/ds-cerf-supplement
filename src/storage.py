@@ -3,8 +3,9 @@ Supplemental CERF↔storm data, stored in the dev DB (schema `aa`), alongside th
 KB's `aa.cerf_allocation` feed. Two normalized tables:
 
   aa.cerf_allocation_storm(application_code, sid)   -- one row per matched storm
-  aa.cerf_supplement(application_code, not_tc, valid_month_start, valid_year_start,
-                     valid_month_end, valid_year_end, confidence, notes, updated_at)
+  aa.cerf_supplement(application_code, not_tc, not_drought, valid_month_start,
+                     valid_year_start, valid_month_end, valid_year_end, confidence,
+                     notes, updated_at)
 
 `valid_*` hold the meteorological drought period (rainfall-deficit months) for
 drought allocations — start/end month+year, since a drought can span a year
@@ -34,6 +35,7 @@ _COLUMNS = [
     "ApplicationCode",
     "sids",
     "not_tc",
+    "not_drought",
     "valid_month_start",
     "valid_year_start",
     "valid_month_end",
@@ -42,7 +44,7 @@ _COLUMNS = [
     "notes",
     "updated_at",
 ]
-_SUPP_COLS = ["not_tc", "valid_month_start", "valid_year_start",
+_SUPP_COLS = ["not_tc", "not_drought", "valid_month_start", "valid_year_start",
               "valid_month_end", "valid_year_end", "confidence", "notes"]
 
 
@@ -79,6 +81,15 @@ def has_valid_period(row) -> bool:
     )
 
 
+def is_drought_resolved(row) -> bool:
+    """Drought analogue of is_resolved: dated, or flagged not-a-drought.
+
+    not_drought marks a 'Drought'-typed allocation with no meteorological drought
+    behind it (e.g. the 2008 food-price-crisis allocations) — it will never get a
+    valid period."""
+    return has_valid_period(row) or bool(row.get("not_drought"))
+
+
 def ensure_tables() -> None:
     with stratus.get_engine(write=True).begin() as conn:
         conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}"))
@@ -86,6 +97,7 @@ def ensure_tables() -> None:
             CREATE TABLE IF NOT EXISTS {SCHEMA}.cerf_supplement (
                 application_code   text PRIMARY KEY,
                 not_tc             boolean,
+                not_drought        boolean,
                 valid_month_start  integer,
                 valid_year_start   integer,
                 valid_month_end    integer,
@@ -94,10 +106,13 @@ def ensure_tables() -> None:
                 notes              text,
                 updated_at         timestamptz
             )"""))
-        # migration for tables created before the confidence column existed
+        # migrations for tables created before these columns existed
         conn.execute(text(f"""
             ALTER TABLE {SCHEMA}.cerf_supplement
             ADD COLUMN IF NOT EXISTS confidence double precision"""))
+        conn.execute(text(f"""
+            ALTER TABLE {SCHEMA}.cerf_supplement
+            ADD COLUMN IF NOT EXISTS not_drought boolean"""))
         conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {SCHEMA}.cerf_allocation_storm (
                 application_code text NOT NULL,
@@ -114,8 +129,9 @@ def load_supplemental() -> pd.DataFrame:
         supp = pd.read_sql(text(f"SELECT * FROM {SCHEMA}.cerf_supplement"), conn)
         links = pd.read_sql(
             text(f"SELECT application_code, sid FROM {SCHEMA}.cerf_allocation_storm"), conn)
-    if "confidence" not in supp.columns:  # table predates the column
-        supp["confidence"] = None
+    for _col in ("confidence", "not_drought"):  # table may predate these columns
+        if _col not in supp.columns:
+            supp[_col] = None
 
     sids_by_code: dict[str, list[str]] = {}
     for _, r in links.iterrows():
@@ -130,6 +146,7 @@ def load_supplemental() -> pd.DataFrame:
             "ApplicationCode": code,
             "sids": encode_sids(sids_by_code.get(code, [])),
             "not_tc": (bool(s["not_tc"]) if s is not None and pd.notna(s["not_tc"]) else None),
+            "not_drought": (bool(s["not_drought"]) if s is not None and pd.notna(s["not_drought"]) else None),
             "valid_month_start": s["valid_month_start"] if s is not None else None,
             "valid_year_start": s["valid_year_start"] if s is not None else None,
             "valid_month_end": s["valid_month_end"] if s is not None else None,
@@ -155,11 +172,13 @@ def save_supplemental(df: pd.DataFrame) -> None:
             conf = r.get("confidence")
             conn.execute(text(f"""
                 INSERT INTO {SCHEMA}.cerf_supplement
-                  (application_code, not_tc, valid_month_start, valid_year_start,
-                   valid_month_end, valid_year_end, confidence, notes, updated_at)
-                VALUES (:c, :nt, :ms, :ys, :me, :ye, :cf, :n, :ts)"""), {
+                  (application_code, not_tc, not_drought, valid_month_start,
+                   valid_year_start, valid_month_end, valid_year_end, confidence,
+                   notes, updated_at)
+                VALUES (:c, :nt, :nd, :ms, :ys, :me, :ye, :cf, :n, :ts)"""), {
                 "c": code,
                 "nt": bool(r["not_tc"]) if pd.notna(r.get("not_tc")) else None,
+                "nd": bool(r["not_drought"]) if pd.notna(r.get("not_drought")) else None,
                 "ms": _i(r.get("valid_month_start")), "ys": _i(r.get("valid_year_start")),
                 "me": _i(r.get("valid_month_end")), "ye": _i(r.get("valid_year_end")),
                 "cf": float(conf) if pd.notna(conf) else None,
