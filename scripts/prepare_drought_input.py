@@ -44,14 +44,20 @@ def main():
     supp = load_supplemental()
 
     comments = chk.user_comments_by_code(label=LABEL) if chk.TOKEN else {}
+    open_issues = chk.open_issues_by_code(label=LABEL) if chk.TOKEN else {}
     supp_by_code = {r["ApplicationCode"]: r for _, r in supp.iterrows()} if not supp.empty else {}
     dated = {c for c, r in supp_by_code.items() if has_valid_period(r)}
 
     cerf["_type"] = cerf["EmergencyTypeName"].map(classify_type)
     in_scope = cerf[(cerf["_type"] == "Drought") & (cerf["WindowFullName"] == "Rapid Response")]
 
-    # undated ones + already-dated ones that have a human comment to act on
+    # undated ones + already-dated ones that have a human comment to act on.
+    # An undated allocation whose issue is already open but has NO human reply is
+    # excluded: the suggestion has been posted, there's nothing new to research
+    # until a human weighs in (keeps the daily Claude workload proportional to
+    # new allocations + replies, not the whole backlog).
     include = set(in_scope[~in_scope["ApplicationCode"].isin(dated)]["ApplicationCode"])
+    include -= {c for c in open_issues if c not in comments}
     include |= {c for c in comments if c in set(in_scope["ApplicationCode"])}
 
     rows = in_scope[in_scope["ApplicationCode"].isin(include)]

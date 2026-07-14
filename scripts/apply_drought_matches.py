@@ -24,6 +24,7 @@ whose allocation is now dated or out of scope.
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pandas as pd
@@ -197,6 +198,7 @@ def main():
                                    label=LABEL)
             print(f"  FLAG {code:22s} issue: {url}")
             created += 1
+            time.sleep(2)  # stay under GitHub's secondary rate limit on creation
 
         # close issues whose allocation is now dated (or out of scope)
         keep_open = set(undated["ApplicationCode"])

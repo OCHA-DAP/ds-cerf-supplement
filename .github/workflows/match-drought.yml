@@ -57,6 +57,7 @@ jobs:
           prompt: "Read the file prompts/match_droughts.md and follow its instructions exactly."
           allowed_tools: "Read,Write,Edit,WebSearch,WebFetch"
           model: "claude-sonnet-5"
+          timeout_minutes: "45"   # default 10 is too tight when several allocations need research
 
       - name: Apply high-confidence periods + manage issues
         env:
