@@ -67,10 +67,16 @@ def main():
 
         if conf >= THRESHOLD and (valid or (not_tc and not sids)):
             flagged_not_tc = not_tc and not sids
+            # preserve any drought period / notes already on the row
+            _prev = supp[supp["ApplicationCode"] == code]
+            prev = _prev.iloc[0] if len(_prev) else {}
             supp = upsert_annotation(supp, code, {
                 "sids": encode_sids(sids), "not_tc": flagged_not_tc or None,
-                "valid_month_start": None, "valid_year_start": None,
-                "valid_month_end": None, "valid_year_end": None, "notes": None,
+                "valid_month_start": prev.get("valid_month_start"),
+                "valid_year_start": prev.get("valid_year_start"),
+                "valid_month_end": prev.get("valid_month_end"),
+                "valid_year_end": prev.get("valid_year_end"),
+                "confidence": conf, "notes": prev.get("notes"),
             })
             applied += 1
             print(f"  APPLY {code:22s} conf={conf:.2f} sids={sids} not_tc={flagged_not_tc}")

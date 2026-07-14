@@ -7,7 +7,8 @@ name: Match storms
 #   2. claude — Claude Code researches the still-unresolved allocations (summary + web),
 #      reads human replies on open issues (authoritative), applies only validated,
 #      high-confidence matches to the DB. Needs the CLAUDE_CODE_OAUTH_TOKEN secret.
-# More matchers (e.g. drought) can key off the same refresh-mirror completion.
+# "Match droughts" chains off THIS workflow's completion (matchers serialize —
+# they share aa.cerf_supplement writes), then deploy-site runs.
 on:
   workflow_run:
     workflows: ["Refresh OneGMS mirror"]

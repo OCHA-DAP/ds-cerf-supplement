@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CERF Allocations × Storms</title>
+<title>CERF Allocations × Storms & Droughts</title>
 <style>
-  :root { --fg:#1b1f24; --muted:#697077; --line:#e3e6ea; --accent:#1f6feb; --bg:#fff; --chip:#eef2f6; }
+  :root { --fg:#1b1f24; --muted:#697077; --line:#e3e6ea; --accent:#1f6feb; --bg:#fff; --chip:#eef2f6; --warn:#b54708; }
   * { box-sizing: border-box; }
   body { margin:0; font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--fg); background:var(--bg); }
   header { padding:24px 20px 8px; max-width:1200px; margin:0 auto; }
@@ -16,6 +16,7 @@
   .seg { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; }
   .seg button { border:0; background:var(--bg); padding:8px 12px; cursor:pointer; font-size:13px; color:var(--muted); }
   .seg button.active { background:var(--accent); color:#fff; }
+  #dataset button.active { background:#1b1f24; }
   .stat { color:var(--muted); font-size:13px; }
   button.link { border:1px solid var(--line); background:var(--bg); border-radius:8px; padding:8px 12px; cursor:pointer; font-size:13px; }
   .wrap { max-width:1200px; margin:0 auto; padding:0 20px 60px; }
@@ -26,100 +27,145 @@
   td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
   .code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; }
   .title { color:var(--muted); font-size:12.5px; }
-  .storm { display:inline-block; background:var(--chip); border-radius:6px; padding:2px 7px; margin:1px 3px 1px 0; font-size:12.5px; }
-  .storm .sid { color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; }
-  .none { color:#b54708; font-size:12.5px; }
+  .storm, .period { display:inline-block; background:var(--chip); border-radius:6px; padding:2px 7px; margin:1px 3px 1px 0; font-size:12.5px; white-space:nowrap; }
+  .storm .sid, .conf { color:var(--muted); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11px; }
+  .none { color:var(--warn); font-size:12.5px; }
   .nottc { color:var(--muted); font-size:12.5px; font-style:italic; }
+  .notes { color:var(--muted); font-size:12.5px; max-width:340px; }
   a { color:var(--accent); text-decoration:none; }
   a:hover { text-decoration:underline; }
 </style>
 </head>
 <body>
 <header>
-  <h1>CERF Allocations × Storms</h1>
-  <div class="sub">Which historical CERF storm allocations have been matched to an IBTrACS storm. <span id="generated"></span></div>
+  <h1>CERF Allocations × Storms &amp; Droughts</h1>
+  <div class="sub">Storm allocations matched to IBTrACS storm(s); drought allocations dated to the months of the actual rainfall deficit. <span id="generated"></span></div>
 </header>
 <div class="controls">
-  <input id="q" type="search" placeholder="Search country, storm, allocation code, title…">
-  <div class="seg" id="filter">
-    <button data-f="all" class="active">All</button>
-    <button data-f="matched">Matched</button>
-    <button data-f="unmatched">Needs storm</button>
-    <button data-f="not_tc">Not a TC</button>
+  <div class="seg" id="dataset">
+    <button data-d="storm" class="active">Storms</button>
+    <button data-d="drought">Droughts</button>
   </div>
+  <input id="q" type="search" placeholder="Search country, storm, allocation code, title…">
+  <div class="seg" id="filter"></div>
   <span class="stat" id="stat"></span>
   <button class="link" id="csv">Download CSV</button>
 </div>
 <div class="wrap">
   <table id="tbl">
-    <thead><tr>
-      <th data-k="year">Year</th>
-      <th data-k="country">Country</th>
-      <th data-k="amount" class="num">Amount&nbsp;(USD)</th>
-      <th data-k="type">Type</th>
-      <th data-k="code">Allocation</th>
-      <th data-k="storms">Storm(s)</th>
-    </tr></thead>
+    <thead><tr id="head"></tr></thead>
     <tbody id="rows"></tbody>
   </table>
 </div>
 <script>
-let DATA = [], view = [], filter = "all", sortKey = "year", sortDir = -1;
+let DATA = [], view = [], dataset = "storm", filter = "all", sortKey = "year", sortDir = -1;
 const $ = s => document.querySelector(s);
 const fmtAmt = v => v == null ? "" : "$" + Math.round(v).toLocaleString("en-US");
 const esc = s => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const MON = ["","Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
-function stormsText(r){ return r.storms.map(s => `${s.name ?? "?"} ${s.season ?? ""}`.trim()).join("; "); }
+const CONFIG = {
+  storm: {
+    cols: [["year","Year"],["country","Country"],["amount","Amount (USD)"],["type","Type"],["code","Allocation"],["storms","Storm(s)"]],
+    filters: [["all","All"],["matched","Matched"],["unmatched","Needs storm"],["not_tc","Not a TC"]],
+    csvName: "cerf_storm_matches.csv",
+  },
+  drought: {
+    cols: [["year","Year"],["country","Country"],["amount","Amount (USD)"],["code","Allocation"],["valid","Valid period"],["notes","Notes"]],
+    filters: [["all","All"],["dated","Dated"],["needs_period","Needs period"]],
+    csvName: "cerf_drought_periods.csv",
+  },
+};
+
+function stormsText(r){ return (r.storms||[]).map(s => `${s.name ?? "?"} ${s.season ?? ""}`.trim()).join("; "); }
+function periodText(r){
+  if(!r.valid) return "";
+  const v = r.valid;
+  return v.ys === v.ye && v.ms === v.me ? `${MON[v.ms]} ${v.ys}` : `${MON[v.ms]} ${v.ys} – ${MON[v.me]} ${v.ye}`;
+}
 function stormsHtml(r){
-  if(r.storms.length) return r.storms.map(s => `<span class="storm">${esc(s.name ?? "?")} ${s.season ?? ""}<br><span class="sid">${esc(s.sid)}</span></span>`).join(" ");
+  if((r.storms||[]).length) return r.storms.map(s => `<span class="storm">${esc(s.name ?? "?")} ${s.season ?? ""}<br><span class="sid">${esc(s.sid)}</span></span>`).join(" ");
   if(r.status === "not_tc") return `<span class="nottc">not a tropical cyclone</span>`;
   return `<span class="none">— needs storm —</span>`;
+}
+function periodHtml(r){
+  if(!r.valid) return `<span class="none">— needs period —</span>`;
+  const conf = r.confidence != null ? `<br><span class="conf">conf ${Math.round(r.confidence*100)}%</span>` : "";
+  return `<span class="period">${esc(periodText(r))}${conf}</span>`;
+}
+function sortVal(r, k){
+  if(k === "storms") return stormsText(r);
+  if(k === "valid") return r.valid ? r.valid.ys*100 + r.valid.ms : -1;
+  return r[k];
 }
 
 function apply(){
   const q = $("#q").value.trim().toLowerCase();
   view = DATA.filter(r => {
-    if(filter === "matched" && r.status !== "matched") return false;
-    if(filter === "unmatched" && r.status !== "unmatched") return false;
-    if(filter === "not_tc" && r.status !== "not_tc") return false;
+    if(r.kind !== dataset) return false;
+    if(filter !== "all" && r.status !== filter) return false;
     if(!q) return true;
-    return [r.code, r.country, r.type, r.title, stormsText(r), r.storms.map(s=>s.sid).join(" ")]
+    return [r.code, r.country, r.type, r.title, stormsText(r), (r.storms||[]).map(s=>s.sid).join(" "), periodText(r), r.notes]
       .join(" ").toLowerCase().includes(q);
   });
   const dir = sortDir, k = sortKey;
   view.sort((a,b) => {
-    let av = k === "storms" ? stormsText(a) : a[k], bv = k === "storms" ? stormsText(b) : b[k];
-    av = av ?? ""; bv = bv ?? "";
+    let av = sortVal(a,k) ?? "", bv = sortVal(b,k) ?? "";
     return (av < bv ? -1 : av > bv ? 1 : 0) * dir;
   });
   render();
 }
 
+function rowHtml(r){
+  const cells = CONFIG[dataset].cols.map(([k]) => {
+    if(k === "year") return `<td class="num">${r.year ?? ""}</td>`;
+    if(k === "country") return `<td>${esc(r.country)}</td>`;
+    if(k === "amount") return `<td class="num">${fmtAmt(r.amount)}</td>`;
+    if(k === "type") return `<td>${esc(r.type)}</td>`;
+    if(k === "code") return `<td><span class="code">${esc(r.code)}</span><br><span class="title">${esc(r.title)}</span></td>`;
+    if(k === "storms") return `<td>${stormsHtml(r)}</td>`;
+    if(k === "valid") return `<td>${periodHtml(r)}</td>`;
+    if(k === "notes") return `<td class="notes">${esc(r.notes)}</td>`;
+    return "<td></td>";
+  });
+  return `<tr>${cells.join("")}</tr>`;
+}
+
 function render(){
-  $("#rows").innerHTML = view.map(r => `<tr>
-    <td class="num">${r.year ?? ""}</td>
-    <td>${esc(r.country)}</td>
-    <td class="num">${fmtAmt(r.amount)}</td>
-    <td>${esc(r.type)}</td>
-    <td><span class="code">${esc(r.code)}</span><br><span class="title">${esc(r.title)}</span></td>
-    <td>${stormsHtml(r)}</td>
-  </tr>`).join("");
-  const c = s => DATA.filter(r=>r.status===s).length;
-  $("#stat").textContent = `${view.length} shown · ${c("matched")} matched · ${c("not_tc")} not-a-TC · ${c("unmatched")} need storm`;
-  document.querySelectorAll("th").forEach(th =>
-    th.querySelector(".arrow")?.remove() ||
-    (th.dataset.k === sortKey && (th.insertAdjacentHTML("beforeend", ` <span class="arrow">${sortDir<0?"▼":"▲"}</span>`))));
+  $("#head").innerHTML = CONFIG[dataset].cols.map(([k, label]) =>
+    `<th data-k="${k}"${k==="amount"?' class="num"':""}>${label}${k===sortKey?` <span class="arrow">${sortDir<0?"▼":"▲"}</span>`:""}</th>`).join("");
+  document.querySelectorAll("th").forEach(th => th.addEventListener("click", () => {
+    const k = th.dataset.k;
+    if(k === sortKey) sortDir *= -1; else { sortKey = k; sortDir = 1; }
+    apply();
+  }));
+  $("#rows").innerHTML = view.map(rowHtml).join("");
+  const inDs = DATA.filter(r => r.kind === dataset);
+  const c = s => inDs.filter(r => r.status === s).length;
+  $("#stat").textContent = dataset === "storm"
+    ? `${view.length} shown · ${c("matched")} matched · ${c("not_tc")} not-a-TC · ${c("unmatched")} need storm`
+    : `${view.length} shown · ${c("dated")} dated · ${c("needs_period")} need period`;
+}
+
+function renderFilters(){
+  $("#filter").innerHTML = CONFIG[dataset].filters.map(([f, label]) =>
+    `<button data-f="${f}"${f===filter?' class="active"':""}>${label}</button>`).join("");
 }
 
 function downloadCsv(){
-  const head = ["code","country","year","amount","type","title","status","storms","sids"];
-  const lines = [head.join(",")].concat(view.map(r => [
-    r.code, r.country, r.year ?? "", r.amount ?? "", r.type, r.title, r.status,
-    stormsText(r), r.storms.map(s=>s.sid).join("|")
-  ].map(v => `"${(v ?? "").toString().replace(/"/g,'""')}"`).join(",")));
+  const storm = dataset === "storm";
+  const head = storm
+    ? ["code","country","year","amount","type","title","status","storms","sids"]
+    : ["code","country","year","amount","type","title","status","valid_period","confidence","notes"];
+  const lines = [head.join(",")].concat(view.map(r => (storm
+    ? [r.code, r.country, r.year ?? "", r.amount ?? "", r.type, r.title, r.status,
+       stormsText(r), (r.storms||[]).map(s=>s.sid).join("|")]
+    : [r.code, r.country, r.year ?? "", r.amount ?? "", r.type, r.title, r.status,
+       periodText(r), r.confidence ?? "", r.notes ?? ""]
+  ).map(v => `"${(v ?? "").toString().replace(/"/g,'""')}"`).join(",")));
   const blob = new Blob([lines.join("\n")], {type:"text/csv"});
   const a = document.createElement("a");
-  a.href = URL.createObjectURL(blob); a.download = "cerf_storm_matches.csv"; a.click();
+  a.href = URL.createObjectURL(blob); a.download = CONFIG[dataset].csvName; a.click();
 }
 
 $("#q").addEventListener("input", apply);
@@ -129,15 +175,20 @@ $("#filter").addEventListener("click", e => {
   document.querySelectorAll("#filter button").forEach(b => b.classList.toggle("active", b===e.target));
   apply();
 });
-document.querySelectorAll("th").forEach(th => th.addEventListener("click", () => {
-  const k = th.dataset.k;
-  if(k === sortKey) sortDir *= -1; else { sortKey = k; sortDir = 1; }
+$("#dataset").addEventListener("click", e => {
+  if(e.target.tagName !== "BUTTON") return;
+  dataset = e.target.dataset.d;
+  document.querySelectorAll("#dataset button").forEach(b => b.classList.toggle("active", b===e.target));
+  filter = "all"; sortKey = "year"; sortDir = -1;
+  renderFilters();
   apply();
-}));
+});
 $("#csv").addEventListener("click", downloadCsv);
 
+renderFilters();
 fetch("data.json?" + Date.now()).then(r => r.json()).then(d => {
-  DATA = d.rows;
+  // rows without a kind come from a pre-drought data.json — treat them as storm rows
+  DATA = d.rows.map(r => r.kind ? r : {...r, kind: "storm"});
   $("#generated").textContent = "Updated " + (d.generated_at || "").replace("T"," ").replace("+00:00"," UTC");
   apply();
 }).catch(e => { $("#rows").innerHTML = `<tr><td colspan="6">Failed to load data.json: ${esc(e.message)}</td></tr>`; });

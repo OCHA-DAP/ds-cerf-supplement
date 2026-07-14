@@ -4,7 +4,12 @@ KB's `aa.cerf_allocation` feed. Two normalized tables:
 
   aa.cerf_allocation_storm(application_code, sid)   -- one row per matched storm
   aa.cerf_supplement(application_code, not_tc, valid_month_start, valid_year_start,
-                     valid_month_end, valid_year_end, notes, updated_at)
+                     valid_month_end, valid_year_end, confidence, notes, updated_at)
+
+`valid_*` hold the meteorological drought period (rainfall-deficit months) for
+drought allocations — start/end month+year, since a drought can span a year
+boundary and often precedes the allocation by up to a year. `confidence` is the
+Claude matcher's stated confidence for auto-applied picks (NULL = set by a human).
 
 Keyed on ApplicationCode (ApplicationID is NOT unique in the CERF feed). Joinable
 to aa.cerf_allocation and storms.ibtracs_storms.
@@ -33,11 +38,12 @@ _COLUMNS = [
     "valid_year_start",
     "valid_month_end",
     "valid_year_end",
+    "confidence",
     "notes",
     "updated_at",
 ]
 _SUPP_COLS = ["not_tc", "valid_month_start", "valid_year_start",
-              "valid_month_end", "valid_year_end", "notes"]
+              "valid_month_end", "valid_year_end", "confidence", "notes"]
 
 
 def encode_sids(sids: list[str] | None) -> str | None:
@@ -64,6 +70,15 @@ def is_resolved(row) -> bool:
     return bool(decode_sids(row.get("sids"))) or bool(row.get("not_tc"))
 
 
+def has_valid_period(row) -> bool:
+    """True when the row carries a complete meteorological drought period."""
+    return all(
+        pd.notna(row.get(k)) and str(row.get(k)).strip() not in ("", "nan")
+        for k in ("valid_month_start", "valid_year_start",
+                  "valid_month_end", "valid_year_end")
+    )
+
+
 def ensure_tables() -> None:
     with stratus.get_engine(write=True).begin() as conn:
         conn.execute(text(f"CREATE SCHEMA IF NOT EXISTS {SCHEMA}"))
@@ -75,9 +90,14 @@ def ensure_tables() -> None:
                 valid_year_start   integer,
                 valid_month_end    integer,
                 valid_year_end     integer,
+                confidence         double precision,
                 notes              text,
                 updated_at         timestamptz
             )"""))
+        # migration for tables created before the confidence column existed
+        conn.execute(text(f"""
+            ALTER TABLE {SCHEMA}.cerf_supplement
+            ADD COLUMN IF NOT EXISTS confidence double precision"""))
         conn.execute(text(f"""
             CREATE TABLE IF NOT EXISTS {SCHEMA}.cerf_allocation_storm (
                 application_code text NOT NULL,
@@ -94,6 +114,8 @@ def load_supplemental() -> pd.DataFrame:
         supp = pd.read_sql(text(f"SELECT * FROM {SCHEMA}.cerf_supplement"), conn)
         links = pd.read_sql(
             text(f"SELECT application_code, sid FROM {SCHEMA}.cerf_allocation_storm"), conn)
+    if "confidence" not in supp.columns:  # table predates the column
+        supp["confidence"] = None
 
     sids_by_code: dict[str, list[str]] = {}
     for _, r in links.iterrows():
@@ -112,6 +134,7 @@ def load_supplemental() -> pd.DataFrame:
             "valid_year_start": s["valid_year_start"] if s is not None else None,
             "valid_month_end": s["valid_month_end"] if s is not None else None,
             "valid_year_end": s["valid_year_end"] if s is not None else None,
+            "confidence": s["confidence"] if s is not None else None,
             "notes": s["notes"] if s is not None else None,
             "updated_at": s["updated_at"] if s is not None else None,
         })
@@ -129,15 +152,17 @@ def save_supplemental(df: pd.DataFrame) -> None:
         for _, r in df.iterrows():
             code = r["ApplicationCode"]
             ts = r.get("updated_at") or datetime.now(timezone.utc)
+            conf = r.get("confidence")
             conn.execute(text(f"""
                 INSERT INTO {SCHEMA}.cerf_supplement
                   (application_code, not_tc, valid_month_start, valid_year_start,
-                   valid_month_end, valid_year_end, notes, updated_at)
-                VALUES (:c, :nt, :ms, :ys, :me, :ye, :n, :ts)"""), {
+                   valid_month_end, valid_year_end, confidence, notes, updated_at)
+                VALUES (:c, :nt, :ms, :ys, :me, :ye, :cf, :n, :ts)"""), {
                 "c": code,
                 "nt": bool(r["not_tc"]) if pd.notna(r.get("not_tc")) else None,
                 "ms": _i(r.get("valid_month_start")), "ys": _i(r.get("valid_year_start")),
                 "me": _i(r.get("valid_month_end")), "ye": _i(r.get("valid_year_end")),
+                "cf": float(conf) if pd.notna(conf) else None,
                 "n": (r.get("notes") or None), "ts": ts,
             })
             for sid in decode_sids(r["sids"]):

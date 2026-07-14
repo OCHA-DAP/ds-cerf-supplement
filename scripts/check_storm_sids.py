@@ -89,12 +89,14 @@ CODE_RE = re.compile(
 )
 
 
-def _issues(state: str):
-    """Yield issues under our label in the given state ('all'/'open')."""
+# All helpers below default to the storm label but take `label=` so other
+# matchers (match-drought etc.) can reuse them with their own label.
+def _issues(state: str, label: str = LABEL):
+    """Yield issues under the label in the given state ('all'/'open')."""
     page = 1
     while True:
         r = _gh("GET", f"/repos/{REPO}/issues",
-                params={"labels": LABEL, "state": state, "per_page": 100, "page": page})
+                params={"labels": label, "state": state, "per_page": 100, "page": page})
         r.raise_for_status()
         batch = r.json()
         if not batch:
@@ -103,29 +105,29 @@ def _issues(state: str):
         page += 1
 
 
-def existing_issue_codes() -> set[str]:
-    """ApplicationCodes that already have an issue (any state) under our label."""
-    return {m.group(1) for i in _issues("all")
+def existing_issue_codes(label: str = LABEL) -> set[str]:
+    """ApplicationCodes that already have an issue (any state) under the label."""
+    return {m.group(1) for i in _issues("all", label)
             if (m := CODE_RE.search(i.get("title", "")))}
 
 
-def open_issues_by_code() -> dict[str, int]:
+def open_issues_by_code(label: str = LABEL) -> dict[str, int]:
     out = {}
-    for i in _issues("open"):
+    for i in _issues("open", label):
         if (m := CODE_RE.search(i.get("title", ""))):
             out[m.group(1)] = i["number"]
     return out
 
 
-def ensure_label():
+def ensure_label(label: str = LABEL, color: str = "1f6feb",
+                 description: str = "CERF allocation needs a storm SID assigned"):
     _gh("POST", f"/repos/{REPO}/labels",
-        json={"name": LABEL, "color": "1f6feb",
-              "description": "CERF allocation needs a storm SID assigned"})
+        json={"name": label, "color": color, "description": description})
 
 
-def create_issue(title: str, body: str):
+def create_issue(title: str, body: str, label: str = LABEL):
     r = _gh("POST", f"/repos/{REPO}/issues",
-            json={"title": title, "body": body, "labels": [LABEL], "assignees": [ASSIGNEE]})
+            json={"title": title, "body": body, "labels": [label], "assignees": [ASSIGNEE]})
     r.raise_for_status()
     return r.json()["html_url"]
 
@@ -135,14 +137,14 @@ def close_issue(number: int, comment: str):
     _gh("PATCH", f"/repos/{REPO}/issues/{number}", json={"state": "closed"})
 
 
-def user_comments_by_code() -> dict[str, list[str]]:
+def user_comments_by_code(label: str = LABEL) -> dict[str, list[str]]:
     """Human comments on open issues, keyed by ApplicationCode.
 
     Excludes bot comments (github-actions) and the automation's own markers
     (🤖 suggestions, ✅ close notes) so only real human guidance is returned.
     """
     out: dict[str, list[str]] = {}
-    for issue in _issues("open"):
+    for issue in _issues("open", label):
         m = CODE_RE.search(issue.get("title", ""))
         if not m:
             continue
@@ -297,10 +299,16 @@ def main(write: bool):
         for alloc, sids, resolved in filled:
             print(f"  FILL {alloc['ApplicationCode']:22s} {list(resolved.items())}")
             if write:
-                supp = upsert_annotation(supp, alloc["ApplicationCode"], {
+                code = alloc["ApplicationCode"]
+                _prev = supp[supp["ApplicationCode"] == code]
+                prev = _prev.iloc[0] if len(_prev) else {}
+                supp = upsert_annotation(supp, code, {
                     "sids": encode_sids(sids),
-                    "valid_month_start": None, "valid_year_start": None,
-                    "valid_month_end": None, "valid_year_end": None, "notes": None,
+                    "valid_month_start": prev.get("valid_month_start"),
+                    "valid_year_start": prev.get("valid_year_start"),
+                    "valid_month_end": prev.get("valid_month_end"),
+                    "valid_year_end": prev.get("valid_year_end"),
+                    "confidence": prev.get("confidence"), "notes": prev.get("notes"),
                 })
         if write:
             save_supplemental(supp)

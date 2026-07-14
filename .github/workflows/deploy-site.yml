@@ -1,11 +1,12 @@
 name: Deploy site
 
 # Builds site/data.json from the DB and deploys the static page to GitHub Pages.
-# Runs after the storm matcher completes (workflow_run), on push to the site/script
-# files, on demand, and once daily as a backstop in case the chain doesn't fire.
+# Runs after the last matcher in the chain completes (workflow_run), on push to
+# the site/script files, on demand, and once daily as a backstop in case the
+# chain doesn't fire (e.g. a matcher failed that day).
 on:
   workflow_run:
-    workflows: ["Match storms"]
+    workflows: ["Match droughts"]
     types: [completed]
   schedule:
     - cron: "0 8 * * *"
