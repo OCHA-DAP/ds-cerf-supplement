@@ -29,9 +29,11 @@ by their IBTrACS Storm ID (SID).
      `reasoning` what the mismatch is.
 
 2. For each allocation, decide which tropical cyclone(s) it responded to:
-   - Use the title and summary first. Use **web search** to confirm which
-     specific storm hit that country around that date, especially for
-     ambiguous ("Cyclones", "six typhoons") or anticipatory-action allocations.
+   - Use the title, summary and `projects` (the funded project titles, scraped
+     from the CERF website — they sometimes name the storm when the title
+     doesn't) first. Use **web search** to confirm which specific storm hit
+     that country around that date, especially for ambiguous ("Cyclones",
+     "six typhoons") or anticipatory-action allocations.
    - The SID(s) you output **must come from that allocation's `candidates`
      list** (that's the IBTrACS universe we can store). If the correct storm is
      not among the candidates (e.g. too recent to be archived), return an empty

@@ -194,7 +194,8 @@ def candidate_table(names: list[str], by_name: dict) -> str:
 def build_body(alloc, names, problems, resolved, by_name) -> str:
     amount = alloc["TotalAmountApproved"]
     amount_s = f"${float(amount):,.0f}" if pd.notna(amount) else "—"
-    summary = (alloc.get("CN_Summary") or "").strip()
+    summary = alloc.get("CN_Summary")
+    summary = (summary if isinstance(summary, str) else "").strip()
     summary = (summary[:500] + "…") if len(summary) > 500 else summary
 
     parts = [
@@ -304,6 +305,7 @@ def main(write: bool):
                 prev = _prev.iloc[0] if len(_prev) else {}
                 supp = upsert_annotation(supp, code, {
                     "sids": encode_sids(sids),
+                    "not_drought": prev.get("not_drought"),
                     "valid_month_start": prev.get("valid_month_start"),
                     "valid_year_start": prev.get("valid_year_start"),
                     "valid_month_end": prev.get("valid_month_end"),

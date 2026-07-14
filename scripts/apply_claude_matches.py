@@ -72,6 +72,7 @@ def main():
             prev = _prev.iloc[0] if len(_prev) else {}
             supp = upsert_annotation(supp, code, {
                 "sids": encode_sids(sids), "not_tc": flagged_not_tc or None,
+                "not_drought": prev.get("not_drought"),
                 "valid_month_start": prev.get("valid_month_start"),
                 "valid_year_start": prev.get("valid_year_start"),
                 "valid_month_end": prev.get("valid_month_end"),

@@ -9,6 +9,10 @@ Rules:
   * confidence >= THRESHOLD and validated -> write the valid (meteorological
     drought) period to aa.cerf_supplement, with the confidence and the
     reasoning as notes (any storm sids/not_tc on the row are preserved);
+  * not_drought: true (and no period) at confidence >= NOT_DROUGHT_THRESHOLD ->
+    flag the allocation as not a meteorological drought (mis-typed in the feed:
+    food-price crisis, conflict, displacement...). Deliberately a HIGHER bar —
+    the flag is a terminal state, used conservatively;
   * otherwise -> leave undated; an issue is opened (label cerf-drought) with
     Claude's suggestion for a human to confirm.
 
@@ -33,12 +37,13 @@ os.environ.setdefault("PGSSLMODE", "require")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.cerf_api import classify_type, fetch_cerf_allocations  # noqa: E402
 from src.storage import (  # noqa: E402
-    ensure_tables, has_valid_period, load_supplemental, save_supplemental,
+    ensure_tables, is_drought_resolved, load_supplemental, save_supplemental,
     upsert_annotation,
 )
 import scripts.check_storm_sids as chk  # noqa: E402
 
 THRESHOLD = 0.8
+NOT_DROUGHT_THRESHOLD = 0.9   # terminal flag — deliberately a higher bar
 LABEL = "cerf-drought"
 MATCHES = Path(__file__).parent.parent / "claude_work" / "drought_matches.json"
 
@@ -72,7 +77,8 @@ def validate(m: dict, alloc_year: int | None) -> str | None:
 def build_issue_body(alloc, suggestion: dict | None) -> str:
     amount = alloc["TotalAmountApproved"]
     amount_s = f"${float(amount):,.0f}" if pd.notna(amount) else "—"
-    summary = (alloc.get("CN_Summary") or "").strip()
+    summary = alloc.get("CN_Summary")
+    summary = (summary if isinstance(summary, str) else "").strip()
     summary = (summary[:600] + "…") if len(summary) > 600 else summary
 
     parts = [
@@ -93,12 +99,15 @@ def build_issue_body(alloc, suggestion: dict | None) -> str:
         parts += ["", f"> {summary}"]
     if suggestion:
         why = (suggestion.get("reasoning") or "").strip()
-        period = "—"
-        if validate(suggestion, None) is None:
+        if suggestion.get("not_drought"):
+            period = "**not a meteorological drought**"
+        elif validate(suggestion, None) is None:
             period = fmt_period(int(suggestion["valid_month_start"]),
                                 int(suggestion["valid_year_start"]),
                                 int(suggestion["valid_month_end"]),
                                 int(suggestion["valid_year_end"]))
+        else:
+            period = "—"
         conf = float(suggestion.get("confidence", 0) or 0)
         parts += ["", "### 🤖 Claude suggestion (not auto-applied)",
                   f"- **Period:** {period} (confidence {conf:.0%})"]
@@ -109,8 +118,11 @@ def build_issue_body(alloc, suggestion: dict | None) -> str:
         "### How to resolve",
         "Reply with the rainfall-deficit period in plain language — e.g. "
         "_\"Oct 2020 – Mar 2021\"_, _\"the failed 2016 deyr\"_, or "
-        "_\"suggestion is correct\"_. The next daily run reads your reply as "
-        "authoritative, writes the period, and closes this issue.",
+        "_\"suggestion is correct\"_. If there was no meteorological drought "
+        "behind this allocation (mis-typed in the feed — food-price crisis, "
+        "conflict, displacement), reply _\"not a drought\"_. The next daily "
+        "run reads your reply as authoritative, applies it, and closes this "
+        "issue.",
     ]
     return "\n".join(parts)
 
@@ -137,16 +149,47 @@ def main():
         year = int(by_code.loc[code, "Year"]) if pd.notna(by_code.loc[code, "Year"]) else None
         conf = float(m.get("confidence", 0) or 0)
         reason = (m.get("reasoning") or "").strip()
+        not_drought = bool(m.get("not_drought"))
         problem = validate(m, year)
+
+        if not_drought:
+            has_period = any(m.get(k) is not None for k in (
+                "valid_month_start", "valid_year_start",
+                "valid_month_end", "valid_year_end"))
+            if conf >= NOT_DROUGHT_THRESHOLD and not has_period:
+                _prev = supp[supp["ApplicationCode"] == code]
+                prev = _prev.iloc[0] if len(_prev) else {}
+                supp = upsert_annotation(supp, code, {
+                    "sids": prev.get("sids"), "not_tc": prev.get("not_tc"),
+                    "not_drought": True,
+                    "valid_month_start": None, "valid_year_start": None,
+                    "valid_month_end": None, "valid_year_end": None,
+                    "confidence": conf, "notes": reason or None,
+                })
+                applied += 1
+                print(f"  APPLY {code:22s} conf={conf:.2f} NOT a meteorological drought")
+                if chk.TOKEN and code in open_issues:
+                    chk.close_issue(open_issues[code],
+                                    f"✅ flagged not a meteorological drought "
+                                    f"(confidence {conf:.0%}).\n\n{reason}")
+            else:
+                skipped += 1
+                suggestions[code] = m
+                why = ("not_drought carries a period" if has_period
+                       else f"not_drought needs confidence >= {NOT_DROUGHT_THRESHOLD}")
+                print(f"  SKIP  {code:22s} ({why})")
+            continue
 
         if conf >= THRESHOLD and problem is None:
             ms, ys = int(m["valid_month_start"]), int(m["valid_year_start"])
             me, ye = int(m["valid_month_end"]), int(m["valid_year_end"])
-            # preserve any storm annotation already on the row
+            # preserve any storm annotation already on the row; a real period
+            # supersedes a not_drought flag
             _prev = supp[supp["ApplicationCode"] == code]
             prev = _prev.iloc[0] if len(_prev) else {}
             supp = upsert_annotation(supp, code, {
                 "sids": prev.get("sids"), "not_tc": prev.get("not_tc"),
+                "not_drought": None,
                 "valid_month_start": ms, "valid_year_start": ys,
                 "valid_month_end": me, "valid_year_end": ye,
                 "confidence": conf, "notes": reason or None,
@@ -172,7 +215,7 @@ def main():
         chk.ensure_label(LABEL, color="bf8700",
                          description="CERF drought allocation needs its valid (rainfall-deficit) period")
         supp = load_supplemental() if applied else supp
-        dated = ({r["ApplicationCode"] for _, r in supp.iterrows() if has_valid_period(r)}
+        dated = ({r["ApplicationCode"] for _, r in supp.iterrows() if is_drought_resolved(r)}
                  if not supp.empty else set())
         undated = in_scope[~in_scope["ApplicationCode"].isin(dated)]
         seen = chk.existing_issue_codes(label=LABEL)
@@ -207,7 +250,7 @@ def main():
             if m and m.group(1) not in keep_open:
                 chk.close_issue(issue["number"],
                                 "✅ Closing automatically — this allocation now has its "
-                                "valid period (or is out of scope).")
+                                "valid period, is flagged not-a-drought, or is out of scope.")
                 closed += 1
 
     summary = (f"Drought matcher: {applied} applied, {skipped} left for review, "
