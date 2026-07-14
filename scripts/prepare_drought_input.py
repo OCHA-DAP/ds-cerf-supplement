@@ -29,8 +29,14 @@ LABEL = "cerf-drought"
 OUT = Path(__file__).parent.parent / "claude_work" / "unresolved_droughts.json"
 
 
+def _clean(v):
+    """None for missing values — pandas hands back NaN (a float) for empty feed fields."""
+    return None if v is None or (isinstance(v, float) and pd.isna(v)) else v
+
+
 def _clip(v, n: int) -> str:
-    return (v or "").strip()[:n]
+    v = _clean(v)
+    return "" if v is None else str(v).strip()[:n]
 
 
 def main():
@@ -69,7 +75,7 @@ def main():
             "amount": float(a["TotalAmountApproved"]) if pd.notna(a["TotalAmountApproved"]) else None,
             "type": a["EmergencyTypeName"],
             "title": a["ApplicationTitle"],
-            "endorsement_date": a.get("CN_ERC_EndorsementDate"),
+            "endorsement_date": _clean(a.get("CN_ERC_EndorsementDate")),
             "summary": _clip(a.get("CN_Summary"), 2000),
             "overview": _clip(a.get("OverviewoftheHumanitarianSituation"), 1200),
             "rationale": _clip(a.get("RationaleforCERFAllocation"), 1200),
