@@ -1,0 +1,71 @@
+name: Match droughts
+
+# The drought matcher: fills in each RR drought allocation's VALID PERIOD — the
+# months of the actual meteorological drought (rainfall deficit), which often
+# precedes the allocation by up to a year. No deterministic stage (you can't
+# parse a failed rainy season out of a title): Claude Code reads the OneGMS
+# narratives (+ web search), proposes a period + confidence, and the apply step
+# validates and writes only confidence >= 0.8; the rest get a cerf-drought
+# issue for a human to confirm (replies are authoritative on the next run).
+#
+# Runs AFTER "Match storms" (not straight off the mirror refresh): both matchers
+# write aa.cerf_supplement via a transactional full-replace, so they must not
+# run concurrently. Chain:
+#   refresh-mirror -> match-storms -> match-drought -> deploy-site
+on:
+  workflow_run:
+    workflows: ["Match storms"]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  claude:
+    # Only run when triggered manually or after a successful storm match.
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install
+        run: |
+          uv venv --python 3.12
+          uv pip install --no-sources -e .
+
+      - name: Prepare undated drought allocations
+        env:
+          PGSSLMODE: require
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DSCI_AZ_DB_DEV_HOST: ${{ secrets.DSCI_AZ_DB_DEV_HOST }}
+          DSCI_AZ_DB_DEV_UID: ${{ secrets.DSCI_AZ_DB_DEV_UID }}
+          DSCI_AZ_DB_DEV_PW: ${{ secrets.DSCI_AZ_DB_DEV_PW }}
+        run: uv run --no-sync python scripts/prepare_drought_input.py
+
+      # Claude researches the drought periods and writes
+      # claude_work/drought_matches.json. Restricted to read/write/search tools —
+      # it cannot touch the DB; the apply step below does all validated writes.
+      - name: Claude research
+        uses: anthropics/claude-code-base-action@beta
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          prompt: "Read the file prompts/match_droughts.md and follow its instructions exactly."
+          allowed_tools: "Read,Write,Edit,WebSearch,WebFetch"
+          model: "claude-sonnet-5"
+
+      - name: Apply high-confidence periods + manage issues
+        env:
+          PGSSLMODE: require
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          DSCI_AZ_DB_DEV_HOST: ${{ secrets.DSCI_AZ_DB_DEV_HOST }}
+          DSCI_AZ_DB_DEV_UID: ${{ secrets.DSCI_AZ_DB_DEV_UID }}
+          DSCI_AZ_DB_DEV_PW: ${{ secrets.DSCI_AZ_DB_DEV_PW }}
+          DSCI_AZ_DB_DEV_UID_WRITE: ${{ secrets.DSCI_AZ_DB_DEV_UID_WRITE }}
+          DSCI_AZ_DB_DEV_PW_WRITE: ${{ secrets.DSCI_AZ_DB_DEV_PW_WRITE }}
+        run: uv run --no-sync python scripts/apply_drought_matches.py
