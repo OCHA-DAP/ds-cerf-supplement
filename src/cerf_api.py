@@ -1,3 +1,4 @@
+import time
 import xml.etree.ElementTree as ET
 from functools import lru_cache
 
@@ -5,6 +6,13 @@ import pandas as pd
 import requests
 
 CERF_API_URL = "https://cerfgms-webapi.unocha.org/v1/application/All.xml"
+# The OneGMS API serves the full ~6 MB feed in one response and is slow on a
+# good day (~1 min) with occasional multi-minute stalls (read-timeout failures
+# took the whole daily chain down on 2026-07-28) — so a generous timeout and
+# retries with backoff.
+_FEED_TIMEOUT = 300
+_FEED_ATTEMPTS = 3
+_FEED_BACKOFF = 60  # seconds between attempts
 
 _FIELDS = [
     "ApplicationID",
@@ -23,11 +31,24 @@ _FIELDS = [
 ]
 
 
+def _fetch_feed() -> bytes:
+    last_exc: Exception | None = None
+    for attempt in range(1, _FEED_ATTEMPTS + 1):
+        try:
+            resp = requests.get(CERF_API_URL, timeout=_FEED_TIMEOUT)
+            resp.raise_for_status()
+            return resp.content
+        except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as e:
+            last_exc = e
+            print(f"CERF feed fetch attempt {attempt}/{_FEED_ATTEMPTS} failed: {e}")
+            if attempt < _FEED_ATTEMPTS:
+                time.sleep(_FEED_BACKOFF)
+    raise last_exc
+
+
 @lru_cache(maxsize=1)
 def fetch_cerf_allocations() -> pd.DataFrame:
-    resp = requests.get(CERF_API_URL, timeout=120)
-    resp.raise_for_status()
-    root = ET.fromstring(resp.content)
+    root = ET.fromstring(_fetch_feed())
     rows = []
     for app_el in root.findall("application"):
         row: dict = {}

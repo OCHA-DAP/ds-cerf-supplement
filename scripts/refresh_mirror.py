@@ -103,10 +103,11 @@ def fetch_cerf(xml_path=None):
     if xml_path:
         root = ET.parse(xml_path).getroot()
     else:
-        import requests
-        resp = requests.get(CERF_API_URL, timeout=300)
-        resp.raise_for_status()
-        root = ET.fromstring(resp.content)
+        # shared retrying fetch — the OneGMS API stalls occasionally (2026-07-28)
+        from pathlib import Path
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+        from src.cerf_api import _fetch_feed
+        root = ET.fromstring(_fetch_feed())
     rows = []
     for a in root.findall("application"):
         title, emerg = _txt(a, "ApplicationTitle"), _txt(a, "EmergencyTypeName")
