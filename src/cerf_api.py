@@ -6,6 +6,7 @@ import pandas as pd
 import requests
 
 CERF_API_URL = "https://cerfgms-webapi.unocha.org/v1/application/All.xml"
+CERF_PROJECT_API_URL = "https://cerfgms-webapi.unocha.org/v1/project/All.json"
 # The OneGMS API serves the full ~6 MB feed in one response and is slow on a
 # good day (~1 min) with occasional multi-minute stalls (read-timeout failures
 # took the whole daily chain down on 2026-07-28) — so a generous timeout and
@@ -13,6 +14,8 @@ CERF_API_URL = "https://cerfgms-webapi.unocha.org/v1/application/All.xml"
 _FEED_TIMEOUT = 300
 _FEED_ATTEMPTS = 3
 _FEED_BACKOFF = 60  # seconds between attempts
+# The project feed is ~18 MB and the server takes ~8 min to build it.
+_PROJECT_FEED_TIMEOUT = 1200
 
 _FIELDS = [
     "ApplicationID",
@@ -31,11 +34,11 @@ _FIELDS = [
 ]
 
 
-def _fetch_feed() -> bytes:
+def _fetch_feed(url: str = CERF_API_URL, timeout: int = _FEED_TIMEOUT) -> bytes:
     last_exc: Exception | None = None
     for attempt in range(1, _FEED_ATTEMPTS + 1):
         try:
-            resp = requests.get(CERF_API_URL, timeout=_FEED_TIMEOUT)
+            resp = requests.get(url, timeout=timeout)
             resp.raise_for_status()
             return resp.content
         except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as e:
@@ -44,6 +47,10 @@ def _fetch_feed() -> bytes:
             if attempt < _FEED_ATTEMPTS:
                 time.sleep(_FEED_BACKOFF)
     raise last_exc
+
+
+def fetch_project_feed() -> bytes:
+    return _fetch_feed(CERF_PROJECT_API_URL, timeout=_PROJECT_FEED_TIMEOUT)
 
 
 @lru_cache(maxsize=1)
