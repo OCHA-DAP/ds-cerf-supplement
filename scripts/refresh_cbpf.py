@@ -125,7 +125,10 @@ def fetch_allocations():
     for r in _get("AllocationTypes?$format=json"):
         if r.get("FundTypeId") != CBPF_FUND_TYPE_ID:
             continue
-        hay = f"{r.get('AllocationTitle') or ''} {r.get('AllocationSummary') or ''}".lower()
+        # TITLE only: summaries mention "early action" in passing on huge generic
+        # allocations (e.g. $62M "2020 1st Reserve Allocation") — title-only matches
+        # the CERF mirror's precision
+        hay = (r.get("AllocationTitle") or "").lower()
         rows.append(dict(
             allocation_type_id=r["AllocationTypeId"],
             pooled_fund_id=r.get("PooledFundId"),
