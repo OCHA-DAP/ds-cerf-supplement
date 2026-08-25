@@ -59,3 +59,14 @@ jobs:
           DSCI_AZ_DB_DEV_UID_WRITE: ${{ secrets.DSCI_AZ_DB_DEV_UID_WRITE }}
           DSCI_AZ_DB_DEV_PW_WRITE: ${{ secrets.DSCI_AZ_DB_DEV_PW_WRITE }}
         run: uv run --no-sync python scripts/refresh_cbpf.py
+
+      - name: Refresh aa.cbpf_project (+ cluster/sub-IP splits)
+        # ~44 per-fund API requests; a few minutes
+        env:
+          PGSSLMODE: require
+          DSCI_AZ_DB_DEV_HOST: ${{ secrets.DSCI_AZ_DB_DEV_HOST }}
+          DSCI_AZ_DB_DEV_UID: ${{ secrets.DSCI_AZ_DB_DEV_UID }}
+          DSCI_AZ_DB_DEV_PW: ${{ secrets.DSCI_AZ_DB_DEV_PW }}
+          DSCI_AZ_DB_DEV_UID_WRITE: ${{ secrets.DSCI_AZ_DB_DEV_UID_WRITE }}
+          DSCI_AZ_DB_DEV_PW_WRITE: ${{ secrets.DSCI_AZ_DB_DEV_PW_WRITE }}
+        run: uv run --no-sync python scripts/refresh_cbpf_projects.py
