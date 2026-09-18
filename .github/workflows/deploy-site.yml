@@ -61,6 +61,12 @@ jobs:
           DSCI_AZ_DB_DEV_PW: ${{ secrets.DSCI_AZ_DB_DEV_PW }}
         run: uv run --no-sync python scripts/export_cbpf_erd.py
 
+      - name: Check site layout (landing page + every product under its own path)
+        run: |
+          test -f site/index.html && test -f site/assets/site.css
+          test -f site/review/index.html && test -f site/review/data.json
+          test -f site/mirror/index.html && test -f site/mirror/meta.json
+
       - uses: actions/configure-pages@v5
 
       - uses: actions/upload-pages-artifact@v3

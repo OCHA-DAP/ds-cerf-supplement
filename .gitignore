@@ -4,3 +4,4 @@ __pycache__/
 .env
 claude_work/
 site/mirror/meta.json
+site/review/data.json
