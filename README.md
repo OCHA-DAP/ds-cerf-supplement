@@ -47,6 +47,31 @@ a daily **upsert** (feed columns + the deterministic `aa_keyword`), keyed on
 (`aa.actual_activation` + the curated `aa.activation_allocation` crosswalk, maintained
 by ds-knowledge-base's `aa-links` confirm flow) — this script never touches those.
 
+### The CBPF mirrors (schema `aa` + schema `cbpf`)
+
+This repo is the home of **all** OneGMS mirrors, CBPF included. Two layers:
+
+- **Normalized, AA-facing** (schema `aa`, refreshed by `refresh-mirror.yml`):
+  `aa.cbpf_allocation` + `aa.cbpf_fund` (`scripts/refresh_cbpf.py`, also the
+  fund-agnostic `aa.v_allocation` view) and `aa.cbpf_project` +
+  `_cluster` + `_subip` (`scripts/refresh_cbpf_projects.py`).
+- **Complete raw mirror of the public CBPF API** (schema `cbpf`, ~70 tables,
+  `scripts/refresh_cbpf_full.py`, own daily workflow
+  [refresh-cbpf-full.yml](.github/workflows/refresh-cbpf-full.yml)): one table per
+  public surface of `cbpfapi.unocha.org` — the 28 vo3 and 9 surviving vo1 OData
+  entity sets, the 33 public `GlobalGenericDataExtract` stored queries — plus the
+  public Beneficiary Data Tool (deduplicated people). Columns keep the API's names
+  (snake_cased) and are typed from `$metadata` or by inference; each table is
+  full-replaced daily and carries `fetched_at`; `cbpf.mirror_run` logs every load
+  (rows, requests, seconds, key uniqueness) — the hook for monthly snapshots later.
+  The registry (`src/cbpf_registry.py`) is the single place that says what is
+  mirrored, how it is fetched, and what joins to what; its tail lists what was
+  probed and left out (secured stored queries, superseded versions, dead vo1 sets).
+
+The **ERD** of the whole CBPF mirror, with live row counts and column lists, is
+published at **https://ocha-dap.github.io/ds-cerf-supplement/mirror/**
+(`site/mirror/index.html`, fed by `scripts/export_cbpf_erd.py` on every deploy).
+
 ## Local setup
 
 ```bash

@@ -3,3 +3,4 @@ __pycache__/
 *.pyc
 .env
 claude_work/
+site/mirror/meta.json

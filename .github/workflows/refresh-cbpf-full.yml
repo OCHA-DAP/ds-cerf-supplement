@@ -1,0 +1,57 @@
+name: Refresh CBPF raw mirror
+
+# Daily full-replace of the complete raw mirror of the public CBPF API (schema
+# `cbpf`, ~60 tables: vo3 + vo1 entity sets, the 33 public stored queries, the
+# Beneficiary Data Tool). Independent of refresh-mirror.yml — that one feeds the
+# matcher chain and stays short; this one is ~1,000 API calls and 30–60 min, and
+# nothing downstream chains off it. The AA-facing aa.cbpf_* tables are refreshed by
+# refresh-mirror.yml, not here. Also runnable on demand (optionally for a subset).
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      only:
+        description: "comma-separated table names (blank = all)"
+        required: false
+      group:
+        description: "one ERD group only (fund|allocation|project|partner|people|reporting|finance|master|bdt)"
+        required: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cbpf-raw-mirror
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    # first full local run took ~2.5 h: project_summary_v1 (vo1, ShowFullProjectInfo=1
+    # narrative text) alone is ~50 min server-side, narrative_report_logical_framework ~20
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v5
+
+      - name: Install
+        # --no-sources ignores the local-path ocha-stratus override in pyproject
+        run: |
+          uv venv --python 3.12
+          uv pip install --no-sources -e .
+
+      - name: Refresh schema cbpf
+        env:
+          PGSSLMODE: require
+          DSCI_AZ_DB_DEV_HOST: ${{ secrets.DSCI_AZ_DB_DEV_HOST }}
+          DSCI_AZ_DB_DEV_UID: ${{ secrets.DSCI_AZ_DB_DEV_UID }}
+          DSCI_AZ_DB_DEV_PW: ${{ secrets.DSCI_AZ_DB_DEV_PW }}
+          DSCI_AZ_DB_DEV_UID_WRITE: ${{ secrets.DSCI_AZ_DB_DEV_UID_WRITE }}
+          DSCI_AZ_DB_DEV_PW_WRITE: ${{ secrets.DSCI_AZ_DB_DEV_PW_WRITE }}
+        run: |
+          ARGS=""
+          if [ -n "${{ github.event.inputs.only }}" ]; then ARGS="$ARGS --only ${{ github.event.inputs.only }}"; fi
+          if [ -n "${{ github.event.inputs.group }}" ]; then ARGS="$ARGS --group ${{ github.event.inputs.group }}"; fi
+          uv run --no-sync python scripts/refresh_cbpf_full.py --quiet $ARGS

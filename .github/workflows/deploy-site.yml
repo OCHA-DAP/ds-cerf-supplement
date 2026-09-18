@@ -16,6 +16,8 @@ on:
     paths:
       - "site/**"
       - "scripts/export_site_data.py"
+      - "scripts/export_cbpf_erd.py"
+      - "src/cbpf_registry.py"
       - ".github/workflows/deploy-site.yml"
 
 permissions:
@@ -50,6 +52,14 @@ jobs:
           DSCI_AZ_DB_DEV_UID: ${{ secrets.DSCI_AZ_DB_DEV_UID }}
           DSCI_AZ_DB_DEV_PW: ${{ secrets.DSCI_AZ_DB_DEV_PW }}
         run: uv run --no-sync python scripts/export_site_data.py
+
+      - name: Generate mirror/meta.json (CBPF mirror ERD)
+        env:
+          PGSSLMODE: require
+          DSCI_AZ_DB_DEV_HOST: ${{ secrets.DSCI_AZ_DB_DEV_HOST }}
+          DSCI_AZ_DB_DEV_UID: ${{ secrets.DSCI_AZ_DB_DEV_UID }}
+          DSCI_AZ_DB_DEV_PW: ${{ secrets.DSCI_AZ_DB_DEV_PW }}
+        run: uv run --no-sync python scripts/export_cbpf_erd.py
 
       - uses: actions/configure-pages@v5
 
