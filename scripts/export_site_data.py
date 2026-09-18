@@ -1,5 +1,5 @@
 """
-Generate site/data.json for the static GitHub Pages site: every storm CERF
+Generate site/review/data.json for the static GitHub Pages site: every storm CERF
 allocation and the IBTrACS storm(s) it has been matched to, plus every drought
 allocation and its valid (meteorological drought / rainfall-deficit) period.
 
@@ -22,7 +22,7 @@ from src.cerf_api import classify_type, fetch_cerf_allocations  # noqa: E402
 from src.db import load_storms  # noqa: E402
 from src.storage import decode_sids, has_valid_period, load_supplemental  # noqa: E402
 
-OUT = Path(__file__).parent.parent / "site" / "data.json"
+OUT = Path(__file__).parent.parent / "site" / "review" / "data.json"
 
 
 def base_row(a) -> dict:

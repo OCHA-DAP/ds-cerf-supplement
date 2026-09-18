@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CBPF mirror — ERD</title>
+<style>
+  :root { --fg:#1b1f24; --muted:#697077; --line:#e3e6ea; --accent:#1f6feb; --bg:#fff; --chip:#eef2f6; --warn:#b54708; --ok:#1a7f37; }
+  * { box-sizing:border-box; }
+  body { margin:0; font:15px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif; color:var(--fg); background:var(--bg); }
+  header, .wrap { max-width:1400px; margin:0 auto; padding:0 20px; }
+  header { padding-top:20px; }
+  h1 { margin:0 0 4px; font-size:22px; }
+  .sub { color:var(--muted); font-size:13px; max-width:900px; }
+  .controls { position:sticky; top:0; background:var(--bg); z-index:5; padding:12px 20px; max-width:1400px; margin:0 auto; display:flex; gap:10px; flex-wrap:wrap; align-items:center; border-bottom:1px solid var(--line); }
+  .seg { display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; flex-wrap:wrap; }
+  .seg button { border:0; background:var(--bg); padding:7px 11px; cursor:pointer; font-size:13px; color:var(--muted); }
+  .seg button.active { background:var(--accent); color:#fff; }
+  #view button.active { background:#1b1f24; }
+  label.chk { font-size:13px; color:var(--muted); display:inline-flex; gap:5px; align-items:center; }
+  .stat { color:var(--muted); font-size:13px; margin-left:auto; }
+  #diagram { overflow:auto; border:1px solid var(--line); border-radius:8px; margin:16px 0; background:#fafbfc; min-height:200px; }
+  #diagram svg { max-width:none !important; height:auto; width:100%; }
+  .note { font-size:12.5px; color:var(--muted); margin:0 0 8px; }
+  table { width:100%; border-collapse:collapse; font-size:13.5px; }
+  th, td { text-align:left; padding:8px 9px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { font-size:12px; text-transform:uppercase; letter-spacing:.03em; color:var(--muted); white-space:nowrap; cursor:pointer; user-select:none; position:sticky; top:52px; background:var(--bg); }
+  td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+  .code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; }
+  .chip { display:inline-block; background:var(--chip); border-radius:6px; padding:1px 7px; font-size:12px; white-space:nowrap; }
+  .g-fund{background:#e7f0ff} .g-allocation{background:#fff1d6} .g-project{background:#e6f6ea} .g-partner{background:#f3e8ff}
+  .g-people{background:#ffe8ec} .g-reporting{background:#e0f7fa} .g-finance{background:#fdf2c9} .g-master{background:#f0f0f0} .g-bdt{background:#ffe3c2}
+  .desc { color:var(--muted); font-size:12.5px; max-width:520px; }
+  details { margin-top:4px; } summary { cursor:pointer; font-size:12px; color:var(--accent); }
+  .cols { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:11.5px; color:var(--muted); columns:3; column-gap:18px; margin-top:6px; }
+  .cols div { break-inside:avoid; }
+  .key { color:var(--fg); font-weight:600; }
+  .warn { color:var(--warn); } .ok { color:var(--ok); }
+  a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
+  input[type=search] { min-width:220px; padding:7px 11px; border:1px solid var(--line); border-radius:8px; font-size:13px; }
+</style>
+</head>
+<body>
+<!-- back to the site landing page — first element inside <body> (team convention) -->
+<style>
+  .home-link { display:inline-block; margin:10px 12px 0; padding:6px 12px;
+    font:500 13px/1 'Roboto',system-ui,sans-serif; color:#1e795f;
+    background:#e9f5f1; border:1px solid #d4eae4; border-radius:4px;
+    text-decoration:none; }
+  .home-link:hover { background:#d4eae4; }
+</style>
+<a class="home-link" href="../">← CERF &amp; CBPF allocation data</a>
+<header>
+  <h1>CBPF mirror — entity-relationship diagram</h1>
+  <div class="sub">Every table the daily mirror of the public CBPF / OneGMS API keeps in the dev DB: the raw mirror (schema <span class="code">cbpf</span>, one table per public API surface — vo3 + vo1 OData entity sets, public stored queries, the Beneficiary Data Tool) and the normalized AA-facing tables (schema <span class="code">aa</span>). Edges are <b>joins by convention</b> — the API declares no foreign keys; the project code is the one identifier every feed agrees on, allocations are <span class="code">(pooled_fund_id, allocation_type_id)</span>. <span id="generated"></span></div>
+</header>
+<div class="controls">
+  <div class="seg" id="view">
+    <button data-v="core" class="active">Core</button>
+    <button data-v="all">All tables</button>
+    <button data-v="group">By group</button>
+  </div>
+  <div class="seg" id="groups"></div>
+  <label class="chk"><input type="checkbox" id="showcols" checked> key columns</label>
+  <label class="chk"><input type="checkbox" id="showaa" checked> aa.* tables</label>
+  <label class="chk">zoom <input type="range" id="zoom" min="50" max="400" value="150" style="width:110px"></label>
+  <input id="q" type="search" placeholder="Filter table list…">
+  <span class="stat" id="stat"></span>
+</div>
+<div class="wrap">
+  <p class="note" id="viewnote"></p>
+  <div id="diagram"></div>
+  <table id="tbl">
+    <thead><tr>
+      <th data-k="schema">Schema</th><th data-k="name">Table</th><th data-k="group">Group</th><th data-k="source">Source</th>
+      <th data-k="rows" class="num">Rows</th><th data-k="ncols" class="num">Cols</th><th data-k="key">Key</th><th data-k="desc">What it is</th>
+    </tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+</div>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js"></script>
+<script>
+mermaid.initialize({ startOnLoad:false, securityLevel:"loose", maxTextSize: 400000, maxEdges: 2000,
+  er: { useMaxWidth:false, fontSize: 12 }, theme:"neutral" });
+let META = null, view = "core", group = null, sortKey = "group", sortDir = 1;
+const $ = s => document.querySelector(s);
+const esc = s => (s ?? "").toString().replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+const fmt = n => n == null ? "" : Number(n).toLocaleString("en-US");
+
+// The "core" view: the grant-management spine. Everything else hangs off these.
+const CORE = ["cbpf.mst_pooled_fund","cbpf.allocation_types","cbpf.pf_proj_summary_v4","cbpf.pf_proj_detail","cbpf.pf_org_summary",
+  "cbpf.project_summary_v1","cbpf.cluster_v1","cbpf.pf_glb_indic","cbpf.glb_indic_mst","cbpf.pf_rpt_clst_benef",
+  "cbpf.bdt_template","cbpf.bdt_reach_by_allocation","cbpf.contribution_v1",
+  "aa.cbpf_fund","aa.cbpf_allocation","aa.cbpf_project","aa.cbpf_project_cluster","aa.cbpf_project_subip"];
+
+function qual(t){ return t.schema + "." + t.name; }
+function mermaidId(q){ return q.replace(/\./g,"__"); }
+
+function visibleTables(){
+  let ts = META.tables.slice();
+  if(!$("#showaa").checked) ts = ts.filter(t => t.schema !== "aa");
+  if(view === "core") ts = ts.filter(t => CORE.includes(qual(t)));
+  if(view === "group" && group) ts = ts.filter(t => t.group === group);
+  return ts;
+}
+
+function erd(ts){
+  const names = new Set(ts.map(qual));
+  const lines = ["erDiagram"];
+  const showcols = $("#showcols").checked;
+  for(const t of ts){
+    const id = mermaidId(qual(t));
+    const attrs = [];
+    if(showcols){
+      const keyset = new Set(t.key || []);
+      const joinCols = new Set((t.joins||[]).map(j => j[0]));
+      const cols = (t.columns && t.columns.length) ? t.columns : (t.key||[]).map(k => [k, ""]);
+      for(const [c, ty] of cols){
+        if(keyset.has(c)) attrs.push(`    ${ty || "text"} ${c} PK`);
+        else if(joinCols.has(c)) attrs.push(`    ${ty || "text"} ${c} FK`);
+      }
+      // uncover joins declared on columns the DB doesn't have yet (registry-only meta)
+      for(const c of joinCols) if(!cols.some(x => x[0] === c)) attrs.push(`    text ${c} FK`);
+    }
+    const label = `${qual(t)}  (${t.rows != null ? fmt(t.rows) + " rows" : "not loaded"})`;
+    lines.push(`  ${id}["${label}"] {`, ...attrs, "  }");
+  }
+  const seen = new Set();
+  for(const t of ts){
+    for(const [col, ref] of (t.joins||[])){
+      const [s, n] = ref.split("."); const target = s + "." + n;
+      if(!names.has(target) || target === qual(t)) continue;
+      const k = qual(t) + ">" + target + ":" + col;
+      if(seen.has(k)) continue; seen.add(k);
+      lines.push(`  ${mermaidId(target)} ||..o{ ${mermaidId(qual(t))} : "${col}"`);
+    }
+  }
+  return lines.join("\n");
+}
+
+let renderSeq = 0;
+async function draw(){
+  const ts = visibleTables();
+  const src = erd(ts);
+  const seq = ++renderSeq;
+  $("#diagram").innerHTML = '<p class="note" style="padding:12px">Rendering…</p>';
+  try{
+    const { svg } = await mermaid.render("erd" + seq, src);
+    if(seq !== renderSeq) return;
+    $("#diagram").innerHTML = svg;
+    $("#diagram svg").style.width = $("#zoom").value + "%";
+  }catch(e){
+    $("#diagram").innerHTML = `<pre style="padding:12px;color:var(--warn)">Mermaid failed: ${esc(e.message)}\n\n${esc(src)}</pre>`;
+  }
+  const nEdges = (src.match(/\|\|\.\.o\{/g)||[]).length;
+  $("#stat").textContent = `${ts.length} tables · ${nEdges} join edges · ${fmt(ts.reduce((a,t)=>a+(t.rows||0),0))} rows`;
+  $("#viewnote").textContent = view === "core"
+    ? "Core: the grant-management spine (fund → allocation → project → partner / people / indicators) plus the normalized aa.* tables. Switch to “All tables” or a group for the rest; dotted edges = join by convention."
+    : view === "group" ? `Group “${META.groups[group] || group}” and its edges to tables in the same group.` : "All mirrored tables. Large — scroll the canvas; use the checkboxes to declutter.";
+}
+
+function renderGroups(){
+  $("#groups").innerHTML = Object.entries(META.groups).map(([g, label]) =>
+    `<button data-g="${g}" class="${g===group?'active':''}">${label}</button>`).join("");
+  $("#groups").style.display = view === "group" ? "" : "none";
+}
+
+function renderTable(){
+  const q = $("#q").value.trim().toLowerCase();
+  let ts = visibleTables().filter(t => !q || [t.name, t.source, t.desc, t.group, (t.columns||[]).map(c=>c[0]).join(" ")].join(" ").toLowerCase().includes(q));
+  ts.sort((a,b) => { const av = sv(a), bv = sv(b); return (av < bv ? -1 : av > bv ? 1 : 0) * sortDir; });
+  $("#rows").innerHTML = ts.map(t => `<tr>
+    <td class="code">${t.schema}</td>
+    <td><span class="code">${esc(t.name)}</span>${t.fanout ? `<br><span class="chip">per ${esc(t.fanout)}</span>` : ""}
+      ${t.key_unique === false ? '<br><span class="warn" title="declared key not unique in feed">key not unique</span>' : ""}</td>
+    <td><span class="chip g-${t.group}">${esc(META.groups[t.group] || t.group)}</span></td>
+    <td class="code">${esc(t.source)}${t.params && Object.keys(t.params).length ? `<br><span class="desc">${esc(Object.entries(t.params).map(([k,v])=>k+"="+v).join("&"))}</span>` : ""}</td>
+    <td class="num">${fmt(t.rows)}</td>
+    <td class="num">${t.columns ? t.columns.length : ""}</td>
+    <td class="code">${esc((t.key||[]).join(", "))}</td>
+    <td><div class="desc">${esc(t.desc)}</div>
+      ${t.columns && t.columns.length ? `<details><summary>${t.columns.length} columns</summary><div class="cols">${t.columns.map(([c,ty]) =>
+        `<div${(t.key||[]).includes(c) ? ' class="key"' : ""}>${esc(c)} <span style="opacity:.6">${esc(ty)}</span></div>`).join("")}</div></details>` : ""}
+      ${(t.joins||[]).length ? `<div class="desc">joins: ${t.joins.map(j => `<span class="code">${esc(j[0])}</span>→<span class="code">${esc(j[1])}</span>`).join("; ")}</div>` : ""}
+      ${t.fetched_at ? `<div class="desc">refreshed ${esc(t.fetched_at.replace("T"," ").slice(0,16))} UTC · ${t.requests} request${t.requests===1?"":"s"} · ${Math.round(t.seconds||0)}s</div>` : ""}
+    </td></tr>`).join("");
+  function sv(t){ if(sortKey==="rows") return t.rows ?? -1; if(sortKey==="ncols") return (t.columns||[]).length; if(sortKey==="key") return (t.key||[]).join(); return (t[sortKey] ?? "").toString(); }
+}
+
+function refresh(){ renderGroups(); draw(); renderTable(); }
+
+$("#view").addEventListener("click", e => {
+  if(e.target.tagName !== "BUTTON") return;
+  view = e.target.dataset.v;
+  document.querySelectorAll("#view button").forEach(b => b.classList.toggle("active", b===e.target));
+  if(view === "group" && !group) group = "project";
+  $("#zoom").value = view === "all" ? 400 : 150;   // the full diagram is very wide
+  refresh();
+});
+$("#groups").addEventListener("click", e => { if(e.target.tagName !== "BUTTON") return; group = e.target.dataset.g; refresh(); });
+$("#showcols").addEventListener("change", draw);
+$("#zoom").addEventListener("input", e => { const s = $("#diagram svg"); if(s) s.style.width = e.target.value + "%"; });
+$("#showaa").addEventListener("change", refresh);
+$("#q").addEventListener("input", renderTable);
+document.querySelectorAll("th").forEach(th => th.addEventListener("click", () => {
+  const k = th.dataset.k; if(k === sortKey) sortDir *= -1; else { sortKey = k; sortDir = 1; } renderTable();
+}));
+
+fetch("meta.json?" + Date.now()).then(r => r.json()).then(m => {
+  META = m;
+  const lm = m.api_last_modified ? ` · OneGMS reporting DB last modified ${m.api_last_modified.replace("T"," ")}` : "";
+  $("#generated").textContent = `Generated ${(m.generated_at||"").replace("T"," ").replace("+00:00"," UTC")}${lm}${m.db_introspected ? "" : " · (DB not introspected: structure only)"}`;
+  refresh();
+}).catch(e => { $("#diagram").innerHTML = `<p class="note" style="padding:12px">Failed to load meta.json: ${esc(e.message)}</p>`; });
+</script>
+</body>
+</html>
