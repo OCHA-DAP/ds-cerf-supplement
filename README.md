@@ -10,7 +10,7 @@ A daily pipeline (no interactive app), chained so each stage runs after the last
 1. **Refresh OneGMS mirror** ([workflow](.github/workflows/refresh-mirror.yml)) — daily 05:30 UTC. Upserts the CERF feed into `aa.cerf_allocation` so newly-published allocations are matchable. On success it triggers the matchers.
 2. **Match storms** ([workflow](.github/workflows/match-storms.yml)) — runs after the mirror. Stage 1 backfills SIDs that resolve unambiguously from the allocation title and opens a GitHub issue (tagging the maintainer) for the rest; stage 2 (Claude) researches the remainder and applies validated, high-confidence matches.
 3. **Match droughts** ([workflow](.github/workflows/match-drought.yml)) — runs after the storm matcher (matchers serialize — they share `aa.cerf_supplement` writes). Claude reads each undated drought allocation's OneGMS narratives (+ web search) to date the **rainfall deficit** — often up to a year before the allocation — and the apply step writes only validated, confidence ≥ 0.8 periods; the rest get a `cerf-drought` issue to confirm.
-4. **Deploy site** ([workflow](.github/workflows/deploy-site.yml)) — runs after matching. A lightweight page (Storms / Droughts tabs) regenerated from the DB and deployed to Pages. → **https://ocha-dap.github.io/ds-cerf-supplement/**
+4. **Deploy site** ([workflow](.github/workflows/deploy-site.yml)) — runs after matching. Deploys `site/` to GitHub Pages: a **landing page** at the root (team landing-page convention, HDX v2 styling) with each product under its own path — the Storms / Droughts review page at **https://ocha-dap.github.io/ds-cerf-supplement/review/** (regenerated from the DB) and the CBPF mirror ERD at **https://ocha-dap.github.io/ds-cerf-supplement/mirror/**.
 
 Annotations live in the **dev DB** (schema `aa`), next to the `aa.cerf_allocation`
 feed mirror. SIDs are added by the matcher; anything it can't resolve is filled by
@@ -47,6 +47,52 @@ a daily **upsert** (feed columns + the deterministic `aa_keyword`), keyed on
 (`aa.actual_activation` + the curated `aa.activation_allocation` crosswalk, maintained
 by ds-knowledge-base's `aa-links` confirm flow) — this script never touches those.
 
+### The CBPF mirrors (schema `aa` + schema `cbpf`)
+
+This repo is the home of **all** OneGMS mirrors, CBPF included. Two layers:
+
+- **Normalized, AA-facing** (schema `aa`, refreshed by `refresh-mirror.yml`):
+  `aa.cbpf_allocation` + `aa.cbpf_fund` (`scripts/refresh_cbpf.py`, also the
+  fund-agnostic `aa.v_allocation` view) and `aa.cbpf_project` +
+  `_cluster` + `_subip` (`scripts/refresh_cbpf_projects.py`).
+- **Complete raw mirror of the public CBPF API** (schema `cbpf`, 74 tables + 3 views,
+  `scripts/refresh_cbpf_full.py`, own daily workflow
+  [refresh-cbpf-full.yml](.github/workflows/refresh-cbpf-full.yml)): one table per
+  public surface of `cbpfapi.unocha.org` — the 28 vo3 and 9 surviving vo1 OData
+  entity sets, the 33 public `GlobalGenericDataExtract` stored queries — plus the
+  public Beneficiary Data Tool (deduplicated people: per fund, allocation — global and US scenario — and template, with and without admin locations; group cuts are views). Columns keep the API's names
+  (snake_cased) and are typed from `$metadata` or by inference; each table is
+  full-replaced daily and carries `fetched_at`; `cbpf.mirror_run` logs every load
+  (rows, requests, seconds, key uniqueness) — the hook for monthly snapshots later.
+  The registry (`src/cbpf_registry.py`) is the single place that says what is
+  mirrored, how it is fetched, and what joins to what; its tail lists what was
+  probed and left out (secured stored queries, superseded versions, dead vo1 sets).
+
+The **ERD** of the whole CBPF mirror, with live row counts and column lists, is
+published at **https://ocha-dap.github.io/ds-cerf-supplement/mirror/**
+(`site/mirror/index.html`, fed by `scripts/export_cbpf_erd.py` on every deploy).
+
+### Deriving what the AIT reporting pipeline reads
+
+The mirror was scoped against the *OneGMS Public API Reference* written for
+`ds-ait-reporting`. Every public endpoint that pipeline consumes has a home here, so
+its exports can be rebuilt from the DB instead of the API. Rule: a `cbpf.*` **table** is a
+verbatim API response; anything derivable is a **view** (`cbpf.v_*`), never a table.
+
+| Reference endpoint | Where it is now |
+| --- | --- |
+| `PF_PROJ_SUMMARY_V4` / `PF_PROJ_DETAIL` / `PF_ORG_SUMMARY` / `PF_GLB_STATUS` / `PF_GLB_INDIC` | `cbpf.pf_proj_summary_v4`, `cbpf.pf_proj_detail`, `cbpf.pf_org_summary`, `cbpf.pf_glb_status` (all InstanceTypeIds, column `instance_type_id`), `cbpf.pf_glb_indic` (all years the API serves, not just the current one) |
+| `indicator_reference.csv` / `cluster_reference.csv` (static copies of `GLB_INDIC_MST`, `CLUSTER_LIST`) | live: `cbpf.glb_indic_mst`, `cbpf.cluster_list`, `cbpf.comm_clst_mst` |
+| `AllocationTypes`, `MstPooledFund`, `Poolfund`, `PipelineProjectSummary`, `AllocationFlowByOrgType`, `LastModified` | same names, snake_cased, in `cbpf` |
+| vo1 `ProjectSummary` (`ShowFullProjectInfo=1`), `Cluster`, `NarrativeReportBeneficiary` | `cbpf.project_summary_v1`, `cbpf.cluster_v1`, `cbpf.narrative_report_beneficiary_v1` |
+| BDT `/templates/` | `cbpf.bdt_template` (`group_names`, `allocation_type_ids` as JSON text) |
+| BDT `/beneficiary/?group_name=<group>` (US tranche groups), ± `isByLocation` | **views** `cbpf.v_bdt_reach_by_group`, `cbpf.v_bdt_reach_by_group_location` — the group route only enumerates the group's templates (same rows and figures as `template_name=`, no group-total row; verified 2026-09-21), so the group cut is `bdt_reach_by_template[_location]` joined to `bdt_template.group_names`. Combined ≠ T1 + T2 still holds: they are different templates |
+| BDT `/beneficiary/?year=&only_allocation=1&allocation_category=US\|ALL` | `cbpf.bdt_reach_by_allocation_us[_location]` (US scenario — matches the tranche templates) and `cbpf.bdt_reach_by_allocation[_location]` (global scenario) |
+| BDT `/beneficiary/?template_name=`, `/beneficiaryByDisabilities/` | `cbpf.bdt_reach_by_template[_location]`, `cbpf.bdt_disability_by_template`, `cbpf.bdt_disability_by_fund`, view `cbpf.v_bdt_disability_by_group` |
+| NSFT (US Award) filter | not a table: `where chf_project_code like '%NSFT%'` on any project table |
+| `NARR_RPT_SUMMARY`, `MONITORING_SUMMARY`, `SUB_IP_OneGMS`, `REVISION_OneGMS`, `WORKPLAN_OneGMS`, `PF_ORG_DETAIL` | **not mirrored** — secured (`cbpfapib` credentials); the public sub-grant signal is `cbpf.allocation_flow_by_org_type` + the sub-IP cells in `cbpf.project_summary` / `aa.cbpf_project_subip` |
+| History (snapshots, change detection) | not built yet — `cbpf.mirror_run` + `fetched_at` are the hooks |
+
 ## Local setup
 
 ```bash
@@ -65,11 +111,15 @@ OCHA stratus setup applies.
 
 ## The static site
 
-`site/index.html` is a dependency-free page that fetches `site/data.json` and
+`site/index.html` is the landing page (cards per product; `site/assets/` holds the
+HDX v2 stylesheet + particle hero copied from `ds-seas5-skill`). Every product page
+starts with the team's back-to-home button and lives under its own path:
+`site/review/`, `site/mirror/`. `site/review/index.html` is a dependency-free page
+that fetches `site/review/data.json` and
 renders two searchable, sortable tabs: **Storms** (allocations × matched
 IBTrACS storm(s), matched/needs-storm filter) and **Droughts** (allocations ×
 valid rainfall-deficit period + confidence + notes, dated/needs-period filter),
-each with CSV download. `data.json` is generated by
+each with CSV download. `review/data.json` is generated by
 `scripts/export_site_data.py` and **not committed** (rebuilt on every deploy).
 Pages source must be set to **GitHub Actions**.
 
