@@ -12,6 +12,7 @@ Run:  python scripts/export_cbpf_erd.py [--out site/mirror/meta.json]
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
@@ -59,6 +60,16 @@ def registry_tables():
             joins=[[cbpf_api.snake(a), _qualify(b)] for a, b in s.joins],
             desc=s.desc,
         ))
+    for name, group, desc, sql in cbpf_registry.VIEWS:
+        # a view's "source" is the tables it reads; the ERD joins it to them
+        reads = sorted(set(re.findall(r"cbpf\.([a-z0-9_]+)", sql)))
+        out.append(dict(
+            name=name, schema="cbpf", group=group, kind="view",
+            source="view over " + ", ".join(reads), fanout=None, params={}, key=[],
+            joins=[[ "template_name", f"cbpf.{t}.template_name"] for t in reads if t != "bdt_template"]
+                  + [["group_name", "cbpf.bdt_template.group_names"]],
+            desc=desc,
+        ))
     return out
 
 
@@ -87,7 +98,9 @@ def introspect(tables):
                     from cbpf.mirror_run order by table_name, fetched_at desc"""))}
         for t in tables:
             t["columns"] = cols.get((t["schema"], t["name"]), [])
-            if t["schema"] == "cbpf":
+            if t.get("kind") == "view" and t["columns"]:
+                t["rows"] = c.execute(text(f"select count(*) from cbpf.{t['name']}")).scalar()
+            elif t["schema"] == "cbpf":
                 t.update(runs.get(t["name"], {}))
             elif t["columns"]:
                 t["rows"] = c.execute(text(f"select count(*) from aa.{t['name']}")).scalar()

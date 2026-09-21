@@ -253,21 +253,11 @@ BDT = [
               params={"process_status": "all", "isByLocation": "true"}, group="bdt",
               joins=[("TemplateName", "bdt_template.TemplateName")],
               desc="Each template's deduplicated figure per admin location (LocPath / AdminName). Rows within one template are additive; across templates they are not."),
-    TableSpec("bdt_reach_by_group", "bdt", "beneficiary",
-              param_fanout=("group_name", lambda: __import__("src.bdt_api", fromlist=["group_names"]).group_names()),
+    TableSpec("bdt_disability_by_template", "bdt", "beneficiaryByDisabilities",
+              param_fanout=("template_name", lambda: __import__("src.bdt_api", fromlist=["template_names"]).template_names()),
               params={"process_status": "all", "isByLocation": "false"}, group="bdt",
-              joins=[("PFId", "mst_pooled_fund.PFId")],
-              desc="Group-level deduplication per fund (US_Tranche1_2026, US_Tranche2_2026, US_Tranche_2026 = both tranches deduplicated across each other). Combined ≠ T1 + T2. AllocationTypeId is null on group rows; the group name is on every row. No year parameter (it would empty the feed)."),
-    TableSpec("bdt_reach_by_group_location", "bdt", "beneficiary",
-              param_fanout=("group_name", lambda: __import__("src.bdt_api", fromlist=["group_names"]).group_names()),
-              params={"process_status": "all", "isByLocation": "true"}, group="bdt",
-              joins=[("PFId", "mst_pooled_fund.PFId")],
-              desc="Group-level deduplicated figures per fund × admin location."),
-    TableSpec("bdt_disability_by_group", "bdt", "beneficiaryByDisabilities",
-              param_fanout=("group_name", lambda: __import__("src.bdt_api", fromlist=["group_names"]).group_names()),
-              params={"process_status": "all", "isByLocation": "false"}, group="bdt",
-              joins=[("PFId", "mst_pooled_fund.PFId")],
-              desc="Group-level deduplicated people with disabilities per fund (blank = not yet reported)."),
+              joins=[("TemplateName", "bdt_template.TemplateName")],
+              desc="Each template's deduplicated people with disabilities (blank = not yet reported)."),
     TableSpec("bdt_reach_by_allocation_us", "bdt", "beneficiary", fanout=FANOUT_YEAR, year_param="year", years=_BDT_YEARS,
               params={"only_allocation": 1, "allocation_category": "US", "process_status": "all", "isByLocation": "false"},
               group="bdt", joins=[("AllocationTypeId", "allocation_types.AllocationTypeId"), ("PFId", "mst_pooled_fund.PFId")],
@@ -276,6 +266,30 @@ BDT = [
               params={"only_allocation": 1, "allocation_category": "US", "process_status": "all", "isByLocation": "true"},
               group="bdt", joins=[("AllocationTypeId", "allocation_types.AllocationTypeId"), ("PFId", "mst_pooled_fund.PFId")],
               desc="US-scenario per-allocation figures per admin location."),
+]
+
+# ------------------------------------------------------------------------- views
+# Derived cuts live here as VIEWS, never as tables: everything in a cbpf.* TABLE is a
+# verbatim API response. The BDT "group" route (group_name=US_Tranche1_2026 …) only
+# enumerates the templates in the group — same rows, same figures as the template
+# route, no group-total row (verified 2026-09-21) — so the group cut is a join of the
+# template tables to bdt_template.group_names. (name, group, desc, sql)
+VIEWS = [
+    ("v_bdt_reach_by_group", "bdt",
+     "Group cut of bdt_reach_by_template: one row per group × fund (template). Equals the BDT group_name= route.",
+     """select g.group_name, t.* from cbpf.bdt_reach_by_template t
+        join cbpf.bdt_template tp on tp.template_name = t.template_name
+        cross join lateral json_array_elements_text(tp.group_names::json) as g(group_name)"""),
+    ("v_bdt_reach_by_group_location", "bdt",
+     "Group cut of bdt_reach_by_template_location: group × fund × admin location.",
+     """select g.group_name, t.* from cbpf.bdt_reach_by_template_location t
+        join cbpf.bdt_template tp on tp.template_name = t.template_name
+        cross join lateral json_array_elements_text(tp.group_names::json) as g(group_name)"""),
+    ("v_bdt_disability_by_group", "bdt",
+     "Group cut of bdt_disability_by_template: people with disabilities per group × fund.",
+     """select g.group_name, t.* from cbpf.bdt_disability_by_template t
+        join cbpf.bdt_template tp on tp.template_name = t.template_name
+        cross join lateral json_array_elements_text(tp.group_names::json) as g(group_name)"""),
 ]
 
 ALL: list[TableSpec] = ENTITY_SETS + STORED_QUERIES + VO1_SETS + BDT

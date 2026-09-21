@@ -52,7 +52,7 @@
 <a class="home-link" href="../">← CERF &amp; CBPF allocation data</a>
 <header>
   <h1>CBPF mirror — entity-relationship diagram</h1>
-  <div class="sub">Every table the daily mirror of the public CBPF / OneGMS API keeps in the dev DB: the raw mirror (schema <span class="code">cbpf</span>, one table per public API surface — vo3 + vo1 OData entity sets, public stored queries, the Beneficiary Data Tool) and the normalized AA-facing tables (schema <span class="code">aa</span>). Edges are <b>joins by convention</b> — the API declares no foreign keys; the project code is the one identifier every feed agrees on, allocations are <span class="code">(pooled_fund_id, allocation_type_id)</span>. <span id="generated"></span></div>
+  <div class="sub">Every table the daily mirror of the public CBPF / OneGMS API keeps in the dev DB: the raw mirror (schema <span class="code">cbpf</span>, one table per public API surface — vo3 + vo1 OData entity sets, public stored queries, the Beneficiary Data Tool) and the normalized AA-facing tables (schema <span class="code">aa</span>). Every <span class="code">cbpf</span> table is a verbatim API response; derived cuts are <b>views</b> (marked). Edges are <b>joins by convention</b> — the API declares no foreign keys; the project code is the one identifier every feed agrees on, allocations are <span class="code">(pooled_fund_id, allocation_type_id)</span>. <span id="generated"></span></div>
 </header>
 <div class="controls">
   <div class="seg" id="view">
@@ -122,7 +122,7 @@ function erd(ts){
       // uncover joins declared on columns the DB doesn't have yet (registry-only meta)
       for(const c of joinCols) if(!cols.some(x => x[0] === c)) attrs.push(`    text ${c} FK`);
     }
-    const label = `${qual(t)}  (${t.rows != null ? fmt(t.rows) + " rows" : "not loaded"})`;
+    const label = `${qual(t)}  (${t.kind === "view" ? "view · " : ""}${t.rows != null ? fmt(t.rows) + " rows" : "not loaded"})`;
     lines.push(`  ${id}["${label}"] {`, ...attrs, "  }");
   }
   const seen = new Set();
@@ -171,7 +171,7 @@ function renderTable(){
   ts.sort((a,b) => { const av = sv(a), bv = sv(b); return (av < bv ? -1 : av > bv ? 1 : 0) * sortDir; });
   $("#rows").innerHTML = ts.map(t => `<tr>
     <td class="code">${t.schema}</td>
-    <td><span class="code">${esc(t.name)}</span>${t.fanout ? `<br><span class="chip">per ${esc(t.fanout)}</span>` : ""}
+    <td><span class="code">${esc(t.name)}</span>${t.kind === "view" ? `<br><span class="chip">view (derived)</span>` : ""}${t.fanout ? `<br><span class="chip">per ${esc(t.fanout)}</span>` : ""}
       ${t.key_unique === false ? '<br><span class="warn" title="declared key not unique in feed">key not unique</span>' : ""}</td>
     <td><span class="chip g-${t.group}">${esc(META.groups[t.group] || t.group)}</span></td>
     <td class="code">${esc(t.source)}${t.params && Object.keys(t.params).length ? `<br><span class="desc">${esc(Object.entries(t.params).map(([k,v])=>k+"="+v).join("&"))}</span>` : ""}</td>

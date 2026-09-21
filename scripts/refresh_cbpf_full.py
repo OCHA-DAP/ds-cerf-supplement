@@ -40,8 +40,14 @@ def main():
     ap.add_argument("--funds", help="comma-separated PFAbbrv subset for per-fund tables (testing)")
     ap.add_argument("--dry-run", action="store_true", help="fetch + report; no DB writes")
     ap.add_argument("--list", action="store_true", help="print the registry and exit")
+    ap.add_argument("--views", action="store_true", help="(re)create the derived views only")
     ap.add_argument("--quiet", action="store_true")
     args = ap.parse_args()
+
+    if args.views:
+        import ocha_stratus as stratus
+        cbpf_mirror.create_views(stratus.get_engine(stage="dev", write=True), cbpf_registry.VIEWS)
+        return
 
     specs = cbpf_registry.ALL
     if args.list:
@@ -69,6 +75,9 @@ def main():
                                   verbose=not args.quiet)
     ok = [r for r in results if "error" not in r]
     bad = [r for r in results if "error" in r]
+    if not args.dry_run and not args.only and not args.group:
+        # derived cuts (views over the tables above) — recreated on every full run
+        cbpf_mirror.create_views(engine, cbpf_registry.VIEWS)
     print(f"\n{len(ok)}/{len(results)} tables {'fetched' if args.dry_run else 'loaded'} "
           f"({sum(r.get('rows', 0) for r in ok):,} rows) in {(time.time() - t0) / 60:.1f} min")
     for r in bad:

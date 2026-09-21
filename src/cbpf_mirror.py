@@ -363,6 +363,15 @@ def load(conn, spec: TableSpec, rows: list[dict], fetched_at: datetime, n_reques
     return dict(rows=len(typed_rows), cols=len(cols), key_unique=key_unique)
 
 
+def create_views(engine, views) -> None:
+    """(name, group, desc, sql) → CREATE OR REPLACE VIEW cbpf.<name>. Derived cuts are
+    views, never tables: every cbpf.* table is a verbatim API response."""
+    with engine.begin() as c:
+        for name, _group, _desc, sql in views:
+            c.execute(text(f"create or replace view {SCHEMA}.{name} as {sql}"))
+    print(f"{len(views)} views refreshed: " + ", ".join(v[0] for v in views))
+
+
 def refresh(engine, specs: list[TableSpec], funds: list[str] | None = None,
             dry_run: bool = False, verbose: bool = True) -> list[dict]:
     """Fetch + full-replace each spec in its own transaction; one failure ≠ whole run."""
