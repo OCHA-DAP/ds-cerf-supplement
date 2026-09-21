@@ -53,3 +53,9 @@ def get(route: str, **params) -> list[dict]:
 
 def template_names() -> list[str]:
     return [t["TemplateName"] for t in get("templates") if t.get("TemplateName")]
+
+
+def group_names() -> list[str]:
+    """Distinct group names across templates (``US_Tranche1_2026`` …). A group is its
+    own deduplication query — never the sum of its templates."""
+    return sorted({g for t in get("templates") for g in json.loads(t.get("GroupNames") or "[]")})

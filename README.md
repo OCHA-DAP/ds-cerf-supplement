@@ -55,12 +55,12 @@ This repo is the home of **all** OneGMS mirrors, CBPF included. Two layers:
   `aa.cbpf_allocation` + `aa.cbpf_fund` (`scripts/refresh_cbpf.py`, also the
   fund-agnostic `aa.v_allocation` view) and `aa.cbpf_project` +
   `_cluster` + `_subip` (`scripts/refresh_cbpf_projects.py`).
-- **Complete raw mirror of the public CBPF API** (schema `cbpf`, ~70 tables,
+- **Complete raw mirror of the public CBPF API** (schema `cbpf`, ~75 tables,
   `scripts/refresh_cbpf_full.py`, own daily workflow
   [refresh-cbpf-full.yml](.github/workflows/refresh-cbpf-full.yml)): one table per
   public surface of `cbpfapi.unocha.org` — the 28 vo3 and 9 surviving vo1 OData
   entity sets, the 33 public `GlobalGenericDataExtract` stored queries — plus the
-  public Beneficiary Data Tool (deduplicated people). Columns keep the API's names
+  public Beneficiary Data Tool (deduplicated people: per fund, allocation — global and US scenario —, template and group, with and without admin locations). Columns keep the API's names
   (snake_cased) and are typed from `$metadata` or by inference; each table is
   full-replaced daily and carries `fetched_at`; `cbpf.mirror_run` logs every load
   (rows, requests, seconds, key uniqueness) — the hook for monthly snapshots later.

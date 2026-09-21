@@ -139,6 +139,15 @@ def fetch(spec: TableSpec, funds: list[str] | None = None, verbose: bool = True)
             if verbose:
                 print(f"    {spec.name} [{fund or '-'} {year or ''}] api error: {str(e)[:100]}")
             continue
+        if extra:
+            # carry the fan-out value on every row (BDT group rows don't name their
+            # group; a status row doesn't repeat its InstanceTypeId in every feed)
+            for r in got:
+                for k, v in extra.items():
+                    # skip when the feed already has it under another spelling
+                    # (template_name vs TemplateName) — snake_case would collide
+                    if not any(cbpf_api.snake(c) == cbpf_api.snake(k) for c in r):
+                        r[k] = v
         rows.extend(got)
         if verbose and len(calls) > 1 and (i % 10 == 0 or i == len(calls)):
             print(f"    {spec.name}: {i}/{len(calls)} calls, {len(rows)} rows", flush=True)
