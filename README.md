@@ -96,7 +96,7 @@ copies `src/` + `scripts/` + `prompts/` onto local disk, resolves the extra
 secrets, runs the scripts in order, stops at the first failure).
 
 ```
-refresh         refresh_mirror → refresh_projects → refresh_cbpf → refresh_cbpf_projects
+refresh         refresh_mirror → refresh_projects → refresh_cbpf → refresh_cbpf_projects → refresh_contributions
   └─▶ match_storms    check_storm_sids --write → prepare_claude_input → run_claude → apply_claude_matches
         └─▶ match_droughts  prepare_drought_input → run_claude → apply_drought_matches
               └─▶ publish_site   export_site_data → publish_site_data  (data.json → dev blob, dispatch deploy-site)
@@ -106,8 +106,8 @@ refresh         refresh_mirror → refresh_projects → refresh_cbpf → refresh
 ### 1. `refresh`
 
 `scripts/refresh_mirror.py` upserts the full CERF feed into `aa.cerf_allocation`
-(see [the mirror](#the-aacerf_allocation-mirror) above), then the project and
-CBPF mirrors. Preview locally with
+(see [the mirror](#the-aacerf_allocation-mirror) above), then the project,
+CBPF and donor-contribution mirrors. Preview locally with
 `python scripts/refresh_mirror.py --dry-run`.
 
 ### 2. `match_storms`
