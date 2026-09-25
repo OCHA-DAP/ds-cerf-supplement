@@ -1,0 +1,209 @@
+# Databricks Asset Bundle — ds-cerf-supplement
+#
+# One job, "CERF Supplement Daily", 05:30 UTC: the whole chain that used to be
+# four GitHub Actions workflows linked by workflow_run (the GitHub runners lost
+# network access to the DB in 2026-09). Four chained tasks on one ephemeral
+# job cluster, each running the unchanged scripts through databricks/run_task.py:
+#
+#   refresh        refresh_mirror, refresh_projects, refresh_cbpf,
+#                  refresh_cbpf_projects                          → aa.cerf_*, aa.cbpf_*
+#   match_storms   check_storm_sids --write → prepare_claude_input →
+#                  run_claude prompts/match_storms.md → apply_claude_matches
+#   match_droughts prepare_drought_input → run_claude prompts/match_droughts.md
+#                  → apply_drought_matches
+#   publish_site   export_site_data → publish_site_data (data.json → dev blob,
+#                  then dispatches .github/workflows/deploy-site.yml)
+#
+# The Claude research steps run the Claude Code CLI headlessly on the cluster
+# (scripts/run_claude.py) with the same tool restrictions as the old GitHub
+# action step; Claude never sees DB credentials.
+#
+# Credentials: the Job Compute policy injects DSCI_AZ_DB_* / DSCI_AZ_BLOB_*
+# from the `dsci` secret scope. Two more dsci secrets are resolved by the
+# wrapper (`--secret`) and must exist before the first prod run:
+#   CERF_SUPPLEMENT_GH_TOKEN  fine-grained GitHub PAT on OCHA-DAP/ds-cerf-supplement
+#                             with Issues: read/write (cerf-sid / cerf-drought
+#                             issues) and Actions: read/write (deploy dispatch)
+#   CLAUDE_CODE_OAUTH_TOKEN   `claude setup-token` (same value as the old repo secret)
+#
+# This repo's data lives in the DEV DB (schema aa) by design, so the stage stays
+# dev on every target; the bundle target only decides where the job runs.
+#
+#   databricks bundle validate -t prod -p DEFAULT
+#   databricks bundle deploy   -t dev  -p DEFAULT --var git_branch=my-branch   # paused test copy
+#   databricks bundle run cerf_supplement_daily -t dev -p DEFAULT
+#   databricks bundle destroy  -t dev  -p DEFAULT
+#   databricks bundle deploy   -t prod -p DEFAULT                              # the live job
+#
+# Code changes ship by pushing the branch (source: GIT); `bundle deploy` is
+# only needed when the job config (schedule, params, libraries) changes.
+
+bundle:
+  name: ds-cerf-supplement
+
+variables:
+  git_branch:
+    description: Repo branch the job pulls the scripts from
+    default: main
+  stage:
+    description: ocha-stratus data plane (this repo's tables live on dev)
+    default: dev
+
+.git_source: &git_source
+  git_url: https://github.com/OCHA-DAP/ds-cerf-supplement.git
+  git_provider: gitHub
+  git_branch: ${var.git_branch}
+
+# Job Compute policy (000C79D951EAF0D6): ephemeral single-worker cluster that
+# injects DSCI_AZ_DB_*/DSCI_AZ_BLOB_* (dev + prod) from the dsci secret scope.
+.cluster_spec: &cluster_spec
+  policy_id: "000C79D951EAF0D6"
+  apply_policy_default_values: true
+  num_workers: 1
+
+# pyproject dependencies (ocha-stratus pulls sqlalchemy + psycopg2-binary).
+.libs: &libs
+  - pypi: { package: "ocha-stratus>=0.1.7" }
+  - pypi: { package: "requests" }
+  - pypi: { package: "pandas" }
+  - pypi: { package: "pyarrow" }
+  - pypi: { package: "python-dotenv" }
+
+resources:
+  jobs:
+
+    cerf_supplement_daily:
+      name: CERF Supplement Daily
+      description: >
+        Daily OneGMS mirrors (CERF + CBPF allocations and projects
+        → aa.cerf_*, aa.cbpf_*), then the storm and drought
+        matchers (deterministic + Claude research, human replies on GitHub
+        issues authoritative → aa.cerf_allocation_storm, aa.cerf_supplement),
+        then the site export to the dev blob + Pages deploy dispatch.
+      git_source: *git_source
+      tags:
+        databricks: job
+        output_schema: aa
+        output_blob: projects/ds-cerf-supplement/site
+
+      permissions:
+        - group_name: dsci
+          level: CAN_MANAGE
+
+      schedule:
+        # 05:30 UTC daily (the old refresh-mirror cron). No explicit
+        # pause_status: the prod target runs it, the dev target auto-pauses it.
+        quartz_cron_expression: "0 30 5 * * ?"
+        timezone_id: UTC
+
+      max_concurrent_runs: 1
+
+      email_notifications:
+        on_failure:
+          - tristan.downing@un.org
+        no_alert_for_skipped_runs: true
+
+      parameters:
+        - name: stage
+          default: ${var.stage}
+
+      job_clusters:
+        - job_cluster_key: main
+          new_cluster: *cluster_spec
+
+      tasks:
+        - task_key: refresh
+          job_cluster_key: main
+          libraries: *libs
+          timeout_seconds: 3600
+          spark_python_task:
+            python_file: databricks/run_task.py
+            source: GIT
+            parameters:
+              - "scripts/refresh_mirror.py"
+              - "scripts/refresh_projects.py"
+              - "scripts/refresh_cbpf.py"
+              - "scripts/refresh_cbpf_projects.py"
+              # add "scripts/refresh_contributions.py" here when the contribution-mirror branch lands
+              - "--stage"
+              - "{{job.parameters.stage}}"
+
+        - task_key: match_storms
+          depends_on:
+            - task_key: refresh
+          job_cluster_key: main
+          libraries: *libs
+          timeout_seconds: 3600
+          spark_python_task:
+            python_file: databricks/run_task.py
+            source: GIT
+            parameters:
+              - "scripts/check_storm_sids.py --write"
+              - "scripts/prepare_claude_input.py"
+              - "scripts/run_claude.py prompts/match_storms.md --timeout-minutes 20"
+              - "scripts/apply_claude_matches.py"
+              - "--stage"
+              - "{{job.parameters.stage}}"
+              - "--env"
+              - "GITHUB_REPOSITORY=OCHA-DAP/ds-cerf-supplement"
+              - "--secret"
+              - "CERF_SUPPLEMENT_GH_TOKEN=GITHUB_TOKEN"
+              - "--secret"
+              - "CLAUDE_CODE_OAUTH_TOKEN"
+
+        - task_key: match_droughts
+          depends_on:
+            - task_key: match_storms
+          job_cluster_key: main
+          libraries: *libs
+          timeout_seconds: 4800
+          spark_python_task:
+            python_file: databricks/run_task.py
+            source: GIT
+            parameters:
+              - "scripts/prepare_drought_input.py"
+              - "scripts/run_claude.py prompts/match_droughts.md --timeout-minutes 45"
+              - "scripts/apply_drought_matches.py"
+              - "--stage"
+              - "{{job.parameters.stage}}"
+              - "--env"
+              - "GITHUB_REPOSITORY=OCHA-DAP/ds-cerf-supplement"
+              - "--secret"
+              - "CERF_SUPPLEMENT_GH_TOKEN=GITHUB_TOKEN"
+              - "--secret"
+              - "CLAUDE_CODE_OAUTH_TOKEN"
+
+        - task_key: publish_site
+          depends_on:
+            - task_key: match_droughts
+          job_cluster_key: main
+          libraries: *libs
+          timeout_seconds: 1200
+          spark_python_task:
+            python_file: databricks/run_task.py
+            source: GIT
+            parameters:
+              - "scripts/export_site_data.py"
+              - "scripts/publish_site_data.py"
+              - "--stage"
+              - "{{job.parameters.stage}}"
+              - "--env"
+              - "GITHUB_REPOSITORY=OCHA-DAP/ds-cerf-supplement"
+              - "--secret"
+              - "CERF_SUPPLEMENT_GH_TOKEN=GITHUB_TOKEN"
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      profile: DEFAULT
+
+  prod:
+    mode: production
+    workspace:
+      profile: DEFAULT
+      root_path: /Workspace/Users/adm.tdowning@global.un.org/.bundle/${bundle.name}/${bundle.target}
+    run_as:
+      # TODO: replace with a service principal once one is provisioned
+      user_name: adm.tdowning@global.un.org

@@ -1,13 +1,13 @@
 name: Deploy site
 
-# Builds site/data.json from the DB and deploys the static page to GitHub Pages.
-# Runs after the last matcher in the chain completes (workflow_run), on push to
-# the site/script files, on demand, and once daily as a backstop in case the
-# chain doesn't fire (e.g. a matcher failed that day).
+# Deploys the static page to GitHub Pages from the site data the daily Databricks
+# job leaves on the dev blob (projects/ds-cerf-supplement/site/data.json). This
+# runner never talks to the DB: the DB lost public network access in 2026-09, so
+# the whole refresh -> match -> export chain moved to the Databricks job
+# "CERF Supplement Daily" (databricks.yml), whose last step uploads data.json and
+# dispatches this workflow. Also runs on push to the site/script files, on
+# demand, and once daily as a backstop in case the dispatch didn't fire.
 on:
-  workflow_run:
-    workflows: ["Match droughts"]
-    types: [completed]
   schedule:
     - cron: "0 8 * * *"
   workflow_dispatch:
@@ -15,7 +15,8 @@ on:
     branches: [main]
     paths:
       - "site/**"
-      - "scripts/export_site_data.py"
+      - "scripts/fetch_site_data.py"
+      - "src/site_blob.py"
       - ".github/workflows/deploy-site.yml"
 
 permissions:
@@ -43,13 +44,12 @@ jobs:
           uv venv --python 3.12
           uv pip install --no-sources -e .
 
-      - name: Generate data.json
+      - name: Fetch data.json from the blob
         env:
-          PGSSLMODE: require
-          DSCI_AZ_DB_DEV_HOST: ${{ secrets.DSCI_AZ_DB_DEV_HOST }}
-          DSCI_AZ_DB_DEV_UID: ${{ secrets.DSCI_AZ_DB_DEV_UID }}
-          DSCI_AZ_DB_DEV_PW: ${{ secrets.DSCI_AZ_DB_DEV_PW }}
-        run: uv run --no-sync python scripts/export_site_data.py
+          DSCI_AZ_BLOB_DEV_SAS: ${{ secrets.DSCI_AZ_BLOB_DEV_SAS }}
+        run: |
+          test -n "$DSCI_AZ_BLOB_DEV_SAS" || { echo "::error::DSCI_AZ_BLOB_DEV_SAS org secret is not visible to this repo"; exit 1; }
+          uv run --no-sync python scripts/fetch_site_data.py
 
       - uses: actions/configure-pages@v5
 
