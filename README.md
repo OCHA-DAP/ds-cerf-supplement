@@ -47,6 +47,18 @@ a daily **upsert** (feed columns + the deterministic `aa_keyword`), keyed on
 (`aa.actual_activation` + the curated `aa.activation_allocation` crosswalk, maintained
 by ds-knowledge-base's `aa-links` confirm flow) — this script never touches those.
 
+### Donor contributions (`aa.cerf_contribution`, `aa.cbpf_contribution`, `aa.v_contribution`)
+
+Who paid into CERF and into each CBPF / regional fund, per fiscal year — the base for
+**donor shares** of anticipatory-action money (a donor's share of a fund's income in a
+year × the AA that fund released / pre-arranged that year; ds-aa-tracking's donor
+dashboard). `scripts/refresh_contributions.py` (last step of `refresh-mirror.yml`,
+sole writer) mirrors the CERF GMS `donorcontribution.json` feed (one row per
+contribution; the nested pledge / commitment / received / write-off legs are summed)
+and the CBPF OData `ContributionTotal` set (fund × donor × fiscal year, paid +
+pledged), and (re)creates `aa.v_contribution`, a fund-agnostic union with donor names
+harmonized across the two feeds.
+
 ## Local setup
 
 ```bash
