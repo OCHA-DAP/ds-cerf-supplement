@@ -6,7 +6,7 @@
 # job cluster, each running the unchanged scripts through databricks/run_task.py:
 #
 #   refresh        refresh_mirror, refresh_projects, refresh_cbpf,
-#                  refresh_cbpf_projects                          → aa.cerf_*, aa.cbpf_*
+#                  refresh_cbpf_projects, refresh_contributions   → aa.cerf_*, aa.cbpf_*
 #   match_storms   check_storm_sids --write → prepare_claude_input →
 #                  run_claude prompts/match_storms.md → apply_claude_matches
 #   match_droughts prepare_drought_input → run_claude prompts/match_droughts.md
@@ -75,8 +75,8 @@ resources:
     cerf_supplement_daily:
       name: CERF Supplement Daily
       description: >
-        Daily OneGMS mirrors (CERF + CBPF allocations and projects
-        → aa.cerf_*, aa.cbpf_*), then the storm and drought
+        Daily OneGMS mirrors (CERF + CBPF allocations, projects, donor
+        contributions → aa.cerf_*, aa.cbpf_*), then the storm and drought
         matchers (deterministic + Claude research, human replies on GitHub
         issues authoritative → aa.cerf_allocation_storm, aa.cerf_supplement),
         then the site export to the dev blob + Pages deploy dispatch.
@@ -124,7 +124,7 @@ resources:
               - "scripts/refresh_projects.py"
               - "scripts/refresh_cbpf.py"
               - "scripts/refresh_cbpf_projects.py"
-              # add "scripts/refresh_contributions.py" here when the contribution-mirror branch lands
+              - "scripts/refresh_contributions.py"
               - "--stage"
               - "{{job.parameters.stage}}"
 
