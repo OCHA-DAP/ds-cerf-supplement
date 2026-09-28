@@ -74,16 +74,13 @@ resources:
 
     cerf_supplement_daily:
       name: CERF Supplement Daily
-      description: >
-        Daily OneGMS mirrors (CERF + CBPF allocations, projects, donor
-        contributions → aa.cerf_*, aa.cbpf_*), then the storm and drought
-        matchers (deterministic + Claude research, human replies on GitHub
-        issues authoritative → aa.cerf_allocation_storm, aa.cerf_supplement),
-        then the site export to the dev blob + Pages deploy dispatch.
+      description: "Mirror CERF and CBPF allocations from [OneGMS](https://cerfgms-webapi.unocha.org/) and [CBPF OData](https://cbpfapi.unocha.org/vo2/odata) and match them to storms and droughts"
       git_source: *git_source
       tags:
         databricks: job
-        output_schema: aa
+        type: annotation
+        kb: cerf-supplement
+        output_schema: aa.cerf_allocation,aa.cerf_project,aa.cbpf_allocation,aa.cerf_allocation_storm,aa.cerf_supplement
         output_blob: projects/ds-cerf-supplement/site
 
       permissions:
