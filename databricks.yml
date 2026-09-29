@@ -80,7 +80,7 @@ resources:
         databricks: job
         type: annotation
         kb: cerf-supplement
-        output_schema: aa.cerf_allocation,aa.cerf_project,aa.cbpf_allocation,aa.cerf_allocation_storm,aa.cerf_supplement
+        output_schema: aa.cerf_allocation,aa.cerf_project,aa.cbpf_allocation,aa.cerf_contribution,aa.cbpf_contribution,aa.cerf_allocation_storm,aa.cerf_supplement
         output_blob: projects/ds-cerf-supplement/site
 
       permissions:
