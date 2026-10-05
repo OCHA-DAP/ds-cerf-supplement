@@ -10,7 +10,8 @@ CERF_PROJECT_API_URL = "https://cerfgms-webapi.unocha.org/v1/project/All.json"
 # The OneGMS API serves the full ~6 MB feed in one response and is slow on a
 # good day (~1 min) with occasional multi-minute stalls (read-timeout failures
 # took the whole daily chain down on 2026-07-28) — so a generous timeout and
-# retries with backoff.
+# retries with backoff. The CBPF OData refresh scripts fetch through the same
+# helper: a transient HTTP 500 there took the chain down on 2026-10-05.
 _FEED_TIMEOUT = 300
 _FEED_ATTEMPTS = 3
 _FEED_BACKOFF = 60  # seconds between attempts
@@ -43,7 +44,7 @@ def _fetch_feed(url: str = CERF_API_URL, timeout: int = _FEED_TIMEOUT) -> bytes:
             return resp.content
         except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as e:
             last_exc = e
-            print(f"CERF feed fetch attempt {attempt}/{_FEED_ATTEMPTS} failed: {e}")
+            print(f"feed fetch attempt {attempt}/{_FEED_ATTEMPTS} failed: {e}")
             if attempt < _FEED_ATTEMPTS:
                 time.sleep(_FEED_BACKOFF)
     raise last_exc

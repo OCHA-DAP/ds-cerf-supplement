@@ -33,8 +33,12 @@ import argparse
 import json
 import os
 import sys
-import urllib.request
 from collections import defaultdict
+from pathlib import Path
+
+# shared retrying fetch (both feeds) — the CBPF OData API 500s occasionally (2026-10-05)
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from src.cerf_api import _fetch_feed  # noqa: E402
 
 os.environ.setdefault("PGSSLMODE", "require")
 
@@ -150,9 +154,7 @@ from u
 
 
 def _get_json(url):
-    req = urllib.request.Request(url, headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        return json.load(resp)
+    return json.loads(_fetch_feed(url, timeout=300))
 
 
 def _date(s):
