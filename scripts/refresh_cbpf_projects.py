@@ -26,7 +26,11 @@ import argparse
 import json
 import os
 import sys
-import urllib.request
+from pathlib import Path
+
+# shared retrying fetch — the CBPF OData API 500s occasionally (2026-10-05)
+sys.path.insert(0, str(Path(__file__).parent.parent))
+from src.cerf_api import _fetch_feed  # noqa: E402
 
 os.environ.setdefault("PGSSLMODE", "require")
 
@@ -92,9 +96,7 @@ create index if not exists cbpf_project_subip_code_idx
 
 
 def _get(path):
-    req = urllib.request.Request(f"{API}/{path}", headers={"Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=300) as resp:
-        return json.load(resp)["value"]
+    return json.loads(_fetch_feed(f"{API}/{path}", timeout=300))["value"]
 
 
 def _date(s):
