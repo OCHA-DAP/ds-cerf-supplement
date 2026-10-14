@@ -19,6 +19,11 @@ Keyed on `chf_project_code` (globally unique — verified at load, exits if that
 changes). ~44 API requests, a few minutes total. Full-replace load in one transaction
 (chunked multi-row inserts — plain executemany is unusably slow against Azure).
 
+If a fund's fetch still fails after the retries, its previous rows are kept and every
+other fund is replaced as usual. The script then exits non-zero naming the fund(s),
+so the job's failure email fires (before 2026-10, the fund was silently dropped from
+all three tables on a green run).
+
 Auth: ocha-stratus get_engine(write=True); PGSSLMODE=require.
 Run:  python scripts/refresh_cbpf_projects.py [--dry-run]
 """
@@ -27,6 +32,8 @@ import json
 import os
 import sys
 from pathlib import Path
+
+import requests
 
 # shared retrying fetch — the CBPF OData API 500s occasionally (2026-10-05)
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -118,14 +125,27 @@ def _int(v):
 
 
 def fetch_all():
-    abbrvs = sorted({f["PFAbbrv"] for f in _get("MstPooledFund?$format=json")
-                     if f.get("PFAbbrv")})
+    """Returns (projects, clusters, subips, failed); `failed` maps the abbreviation
+    of each fund whose fetch failed to the pooled fund ids its rows carry."""
+    # one abbreviation can cover several fund ids: the Asia-Pacific regional fund
+    # (AP501) is listed once per country envelope, and its projects carry those
+    # ids (94, 95, 97, 99, 505), not 501
+    fund_ids = {}
+    for f in _get("MstPooledFund?$format=json"):
+        if f.get("PFAbbrv"):
+            fund_ids.setdefault(f["PFAbbrv"], set()).add(f["PFId"])
+    abbrvs = sorted(fund_ids)
     projects, clusters, subips = {}, {}, set()
+    failed = {}
     for i, ab in enumerate(abbrvs, 1):
         try:
             rows = _get(f"ProjectSummary?poolfundAbbrv={ab}&$format=json")
-        except Exception as e:  # noqa: BLE001 — one bad fund shouldn't kill the run
-            print(f"  WARN {ab}: fetch failed ({e}) — skipped", file=sys.stderr)
+        # _fetch_feed has already retried; a truncated body gets past
+        # raise_for_status and fails here as bad JSON (ValueError)
+        except (requests.RequestException, ValueError, KeyError) as e:
+            print(f"  ERROR {ab}: fetch failed ({e}) — keeping its previous rows",
+                  file=sys.stderr)
+            failed[ab] = fund_ids[ab]
             continue
         print(f"  [{i}/{len(abbrvs)}] {ab}: {len(rows)} expanded rows")
         for r in rows:
@@ -176,24 +196,15 @@ def fetch_all():
                         _num(amts[j]) if j < len(amts) else None,
                     ))
     subip_rows = [dict(zip(SUBIP_COLUMNS, s)) for s in sorted(subips, key=str)]
-    return list(projects.values()), list(clusters.values()), subip_rows
+    return list(projects.values()), list(clusters.values()), subip_rows, failed
 
 
-def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--dry-run", action="store_true")
-    args = ap.parse_args()
-
-    projects, clusters, subips = fetch_all()
-    print(f"normalized: {len(projects)} projects, {len(clusters)} cluster rows, "
-          f"{len(subips)} sub-implementing-partner rows")
-    if args.dry_run:
-        return
-
-    import ocha_stratus as stratus
+def load(conn, projects, clusters, subips, keep_fund_ids):
+    """Replace all three tables, except the rows of the pooled funds in
+    `keep_fund_ids` (funds whose fetch failed), which stay as they were."""
     from sqlalchemy import text
 
-    def chunked_insert(conn, table, cols, rows, size=1000):
+    def chunked_insert(table, cols, rows, size=1000):
         stmt = text(
             f"insert into {SCHEMA}.{table} ({', '.join(cols)}) "
             f"values ({', '.join(':' + c for c in cols)})"
@@ -201,17 +212,49 @@ def main():
         for i in range(0, len(rows), size):
             conn.execute(stmt, rows[i:i + size])
 
-    eng = stratus.get_engine(stage="dev", write=True)
-    with eng.begin() as c:
-        for stmt in [s for s in DDL.split(";\n") if s.strip()]:
-            c.execute(text(stmt))
+    for stmt in [s for s in DDL.split(";\n") if s.strip()]:
+        conn.execute(text(stmt))
+    if keep_fund_ids:
+        # the child tables carry only the project code, so delete them first,
+        # while cbpf_project still says which fund each code belongs to
+        kept = (f"select chf_project_code from {SCHEMA}.cbpf_project "
+                f"where pooled_fund_id = any(:keep)")
+        keep = {"keep": list(keep_fund_ids)}
+        for t in ("cbpf_project_subip", "cbpf_project_cluster"):
+            conn.execute(text(f"delete from {SCHEMA}.{t} "
+                              f"where chf_project_code not in ({kept})"), keep)
+        conn.execute(text(f"delete from {SCHEMA}.cbpf_project where "
+                          f"pooled_fund_id is null or pooled_fund_id <> all(:keep)"),
+                     keep)
+    else:
         for t in ("cbpf_project_subip", "cbpf_project_cluster", "cbpf_project"):
-            c.execute(text(f"truncate {SCHEMA}.{t}"))
-        chunked_insert(c, "cbpf_project", PROJECT_COLUMNS, projects)
-        chunked_insert(c, "cbpf_project_cluster", CLUSTER_COLUMNS, clusters)
-        chunked_insert(c, "cbpf_project_subip", SUBIP_COLUMNS, subips)
-    print(f"loaded aa.cbpf_project ({len(projects)}), aa.cbpf_project_cluster "
-          f"({len(clusters)}), aa.cbpf_project_subip ({len(subips)})")
+            conn.execute(text(f"truncate {SCHEMA}.{t}"))
+    chunked_insert("cbpf_project", PROJECT_COLUMNS, projects)
+    chunked_insert("cbpf_project_cluster", CLUSTER_COLUMNS, clusters)
+    chunked_insert("cbpf_project_subip", SUBIP_COLUMNS, subips)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--dry-run", action="store_true")
+    args = ap.parse_args()
+
+    projects, clusters, subips, failed = fetch_all()
+    print(f"normalized: {len(projects)} projects, {len(clusters)} cluster rows, "
+          f"{len(subips)} sub-implementing-partner rows")
+    if not args.dry_run:
+        import ocha_stratus as stratus
+
+        eng = stratus.get_engine(stage="dev", write=True)
+        with eng.begin() as c:
+            load(c, projects, clusters, subips, set().union(*failed.values()))
+        print(f"loaded aa.cbpf_project ({len(projects)}), aa.cbpf_project_cluster "
+              f"({len(clusters)}), aa.cbpf_project_subip ({len(subips)})")
+    if failed:
+        sys.exit(f"ERROR: {len(failed)} pooled fund(s) failed to fetch: "
+                 f"{', '.join(failed)} — their previous rows were kept and every "
+                 f"other fund was refreshed. Rerun task refresh_mirrors once the "
+                 f"CBPF API answers.")
 
 
 if __name__ == "__main__":

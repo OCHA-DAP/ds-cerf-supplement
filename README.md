@@ -94,7 +94,9 @@ four `workflow_run`-chained GitHub Actions workflows in 2026-09, when the
 GitHub runners lost network access to the DB. The scripts are unchanged: each
 task runs them through the thin wrapper `databricks/run_task.py` (sets `STAGE`,
 copies `src/` + `scripts/` + `prompts/` onto local disk, resolves the extra
-secrets, runs the scripts in order, stops at the first failure). The tasks run
+secrets, runs the scripts in order, stops at the first failure; `refresh_mirrors`
+passes `--keep-going`, so each mirror runs even if an earlier one fails, and the
+task fails at the end). The tasks run
 one at a time on purpose: the wrapper copies the code into one fixed local
 dir, so two tasks running at once on the shared cluster would overwrite each
 other's files.

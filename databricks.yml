@@ -19,7 +19,9 @@
 # The matchers need only the allocation mirror, so the other mirrors run last
 # (run_if ALL_DONE): a flaky project or CBPF feed still fails the job, which
 # sends the failure email, but no longer skips the matchers or the site. refresh_projects goes last
-# within the task because its feed is the flakiest. The tasks run one at a time
+# within the task because its feed is the flakiest. The task runs with
+# --keep-going: the four scripts are independent, so one failing doesn't stop
+# the rest; the task still fails at the end. The tasks run one at a time
 # on purpose: run_task.py copies the code into one fixed local dir, so two tasks
 # running at once on the shared cluster would overwrite each other's files.
 #
@@ -216,6 +218,7 @@ resources:
               - "scripts/refresh_projects.py"
               - "--stage"
               - "{{job.parameters.stage}}"
+              - "--keep-going"
 
 targets:
   dev:
