@@ -15,8 +15,8 @@ refresh  →  match_storms (deterministic → Claude)  →  match_droughts (Clau
 
 `refresh` runs only `refresh_mirror.py` (the allocation mirror, the one thing the
 matchers need). The other four mirrors run last in `refresh_mirrors` with
-`run_if: ALL_DONE`, so a flaky project or CBPF feed fails the job (and the email
-alert) without skipping the matchers or the site. Tasks run one at a time on
+`run_if: ALL_DONE`, so a flaky project or CBPF feed still fails the job, which
+sends the failure email, but no longer skips the matchers or the site. Tasks run one at a time on
 purpose: `run_task.py` copies the code into one fixed local dir, so concurrent
 tasks on the shared cluster would overwrite each other's files.
 
