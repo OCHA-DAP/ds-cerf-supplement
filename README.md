@@ -11,6 +11,7 @@ A daily pipeline (no interactive app), chained so each stage runs after the last
 2. **Match storms** (task `match_storms`) — runs after the mirror. Stage 1 backfills SIDs that resolve unambiguously from the allocation title and opens a GitHub issue (tagging the maintainer) for the rest; stage 2 (Claude) researches the remainder and applies validated, high-confidence matches.
 3. **Match droughts** (task `match_droughts`) — runs after the storm matcher (matchers serialize — they share `aa.cerf_supplement` writes). Claude reads each undated drought allocation's OneGMS narratives (+ web search) to date the **rainfall deficit** — often up to a year before the allocation — and the apply step writes only validated, confidence ≥ 0.8 periods; the rest get a `cerf-drought` issue to confirm.
 4. **Deploy site** (task `publish_site` → [workflow](.github/workflows/deploy-site.yml)) — runs after matching. A lightweight page (Storms / Droughts tabs) regenerated from the DB, parked on the dev blob and deployed to Pages by GitHub Actions. → **https://ocha-dap.github.io/ds-cerf-supplement/**
+5. **Refresh the other mirrors** (task `refresh_mirrors`) — runs last, whatever happened before it: the CBPF, donor-contribution and CERF project mirrors. Nothing above reads them, so a flaky feed here fails the job without holding up the matchers or the site.
 
 Annotations live in the **dev DB** (schema `aa`), next to the `aa.cerf_allocation`
 feed mirror. SIDs are added by the matcher; anything it can't resolve is filled by
@@ -52,7 +53,7 @@ by ds-knowledge-base's `aa-links` confirm flow) — this script never touches th
 Who paid into CERF and into each CBPF / regional fund, per fiscal year — the base for
 **donor shares** of anticipatory-action money (a donor's share of a fund's income in a
 year × the AA that fund released / pre-arranged that year; ds-aa-tracking's donor
-dashboard). `scripts/refresh_contributions.py` (fifth script of the `refresh` task in
+dashboard). `scripts/refresh_contributions.py` (third script of the `refresh_mirrors` task in
 the CERF Supplement Daily Databricks job, sole writer) mirrors the CERF GMS `donorcontribution.json` feed (one row per
 contribution; the nested pledge / commitment / received / write-off legs are summed)
 and the CBPF OData `ContributionTotal` set (fund × donor × fiscal year, paid +
@@ -88,27 +89,34 @@ Pages source must be set to **GitHub Actions**.
 ## The daily pipeline (Databricks)
 
 One Databricks job, **CERF Supplement Daily** (`databricks.yml`, 05:30 UTC),
-runs the whole chain as four tasks on one ephemeral job cluster. It replaced
+runs the whole chain as five tasks on one ephemeral job cluster. It replaced
 four `workflow_run`-chained GitHub Actions workflows in 2026-09, when the
 GitHub runners lost network access to the DB. The scripts are unchanged: each
 task runs them through the thin wrapper `databricks/run_task.py` (sets `STAGE`,
 copies `src/` + `scripts/` + `prompts/` onto local disk, resolves the extra
-secrets, runs the scripts in order, stops at the first failure).
+secrets, runs the scripts in order, stops at the first failure). The tasks run
+one at a time on purpose: the wrapper copies the code into one fixed local
+dir, so two tasks running at once on the shared cluster would overwrite each
+other's files.
 
 ```
-refresh         refresh_mirror → refresh_projects → refresh_cbpf → refresh_cbpf_projects → refresh_contributions
+refresh         refresh_mirror
   └─▶ match_storms    check_storm_sids --write → prepare_claude_input → run_claude → apply_claude_matches
         └─▶ match_droughts  prepare_drought_input → run_claude → apply_drought_matches
               └─▶ publish_site   export_site_data → publish_site_data  (data.json → dev blob, dispatch deploy-site)
-                    └─▶ Deploy site (GitHub Actions, from the blob)
+                    ├─▶ Deploy site (GitHub Actions, from the blob)
+                    └─▶ refresh_mirrors (run_if ALL_DONE)  refresh_cbpf → refresh_cbpf_projects → refresh_contributions → refresh_projects
 ```
 
 ### 1. `refresh`
 
 `scripts/refresh_mirror.py` upserts the full CERF feed into `aa.cerf_allocation`
-(see [the mirror](#the-aacerf_allocation-mirror) above), then the project,
-CBPF and donor-contribution mirrors. Preview locally with
-`python scripts/refresh_mirror.py --dry-run`.
+(see [the mirror](#the-aacerf_allocation-mirror) above) — the only mirror the
+matchers wait for. Preview locally with `python scripts/refresh_mirror.py --dry-run`.
+The CBPF, donor-contribution and CERF project mirrors run in the last task,
+`refresh_mirrors` (`run_if: ALL_DONE`, so it runs even when a matcher failed);
+the project feed goes last because it is the flakiest (it gets 5 attempts with
+5-minute waits, `src/cerf_api.py`).
 
 ### 2. `match_storms`
 
