@@ -53,7 +53,9 @@ def _fetch_feed(
             resp = requests.get(url, timeout=timeout)
             resp.raise_for_status()
             return resp.content
-        except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as e:
+        # RequestException, not just Timeout/ConnectionError/HTTPError: a drop
+        # after the headers arrive, mid-body, raises ChunkedEncodingError.
+        except requests.RequestException as e:
             last_exc = e
             print(f"feed fetch attempt {attempt}/{attempts} failed after "
                   f"{time.monotonic() - start:.0f}s: {e}")
