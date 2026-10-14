@@ -2,17 +2,26 @@
 #
 # One job, "CERF Supplement Daily", 05:30 UTC: the whole chain that used to be
 # four GitHub Actions workflows linked by workflow_run (the GitHub runners lost
-# network access to the DB in 2026-09). Four chained tasks on one ephemeral
+# network access to the DB in 2026-09). Five chained tasks on one ephemeral
 # job cluster, each running the unchanged scripts through databricks/run_task.py:
 #
-#   refresh        refresh_mirror, refresh_projects, refresh_cbpf,
-#                  refresh_cbpf_projects, refresh_contributions   → aa.cerf_*, aa.cbpf_*
-#   match_storms   check_storm_sids --write → prepare_claude_input →
-#                  run_claude prompts/match_storms.md → apply_claude_matches
-#   match_droughts prepare_drought_input → run_claude prompts/match_droughts.md
-#                  → apply_drought_matches
-#   publish_site   export_site_data → publish_site_data (data.json → dev blob,
-#                  then dispatches .github/workflows/deploy-site.yml)
+#   refresh         refresh_mirror                                  → aa.cerf_allocation
+#   match_storms    check_storm_sids --write → prepare_claude_input →
+#                   run_claude prompts/match_storms.md → apply_claude_matches
+#   match_droughts  prepare_drought_input → run_claude prompts/match_droughts.md
+#                   → apply_drought_matches
+#   publish_site    export_site_data → publish_site_data (data.json → dev blob,
+#                   then dispatches .github/workflows/deploy-site.yml)
+#   refresh_mirrors refresh_cbpf, refresh_cbpf_projects, refresh_contributions,
+#                   refresh_projects                      → aa.cbpf_*, aa.*_contribution,
+#                                                           aa.cerf_project*
+#
+# The matchers need only the allocation mirror, so the other mirrors run last
+# (run_if ALL_DONE): a flaky project or CBPF feed fails the job (and the email
+# alert) without skipping the matchers or the site. refresh_projects goes last
+# within the task because its feed is the flakiest. The tasks run one at a time
+# on purpose: run_task.py copies the code into one fixed local dir, so two tasks
+# running at once on the shared cluster would overwrite each other's files.
 #
 # The Claude research steps run the Claude Code CLI headlessly on the cluster
 # (scripts/run_claude.py) with the same tool restrictions as the old GitHub
@@ -118,10 +127,6 @@ resources:
             source: GIT
             parameters:
               - "scripts/refresh_mirror.py"
-              - "scripts/refresh_projects.py"
-              - "scripts/refresh_cbpf.py"
-              - "scripts/refresh_cbpf_projects.py"
-              - "scripts/refresh_contributions.py"
               - "--stage"
               - "{{job.parameters.stage}}"
 
@@ -188,6 +193,28 @@ resources:
               - "GITHUB_REPOSITORY=OCHA-DAP/ds-cerf-supplement"
               - "--secret"
               - "CERF_SUPPLEMENT_GH_TOKEN=GITHUB_TOKEN"
+
+        # The mirrors nothing downstream reads. ALL_DONE: runs whatever happened
+        # upstream, so a matcher failure doesn't leave them stale either. The
+        # timeout leaves room for all 5 project-feed attempts with their 5-minute
+        # waits (src/cerf_api.py) when each dies after ~5 min, as seen so far.
+        - task_key: refresh_mirrors
+          depends_on:
+            - task_key: publish_site
+          run_if: ALL_DONE
+          job_cluster_key: main
+          libraries: *libs
+          timeout_seconds: 7200
+          spark_python_task:
+            python_file: databricks/run_task.py
+            source: GIT
+            parameters:
+              - "scripts/refresh_cbpf.py"
+              - "scripts/refresh_cbpf_projects.py"
+              - "scripts/refresh_contributions.py"
+              - "scripts/refresh_projects.py"
+              - "--stage"
+              - "{{job.parameters.stage}}"
 
 targets:
   dev:

@@ -1,5 +1,6 @@
 """
-Last step of the daily Databricks job: park site/data.json on the dev blob and
+Last step of the daily Databricks job's matching chain (only the
+refresh_mirrors task runs after it): park site/data.json on the dev blob and
 ask GitHub to deploy the Pages site from it.
 
   1. upload site/data.json -> projects/ds-cerf-supplement/site/data.json (dev blob)
