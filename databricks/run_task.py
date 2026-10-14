@@ -1,7 +1,9 @@
 """Databricks entry wrapper for the pipeline scripts.
 
 Runs one or more of the pure-Python ``scripts/*.py`` unchanged inside a
-Databricks job task, in order, stopping at the first failure. The scripts and
+Databricks job task, in order, stopping at the first failure (with
+``--keep-going``, which is for independent scripts such as the mirrors, it runs
+them all and fails the task at the end instead). The scripts and
 ``src/`` don't know about Databricks (the same files ran on GitHub Actions
 until 2026-09); this wrapper is the only Databricks-specific glue:
 
@@ -83,6 +85,12 @@ def _parse(argv):
         "missing — unlike a spark_env_vars {{secrets/...}} reference, which "
         "stops the cluster from launching at all when the key does not exist.",
     )
+    ap.add_argument(
+        "--keep-going",
+        action="store_true",
+        help="run every script even after one fails, then fail the task naming "
+        "the failed ones (only for scripts that don't hand files to each other)",
+    )
     return ap.parse_args(argv)
 
 
@@ -128,6 +136,7 @@ def main(argv=None):
 
     shown = {k: env[k] for k in ["STAGE", *[kv.partition("=")[0] for kv in args.env]]}
     print(f"[run_task] env={shown} secrets={resolved} scripts={args.scripts}")
+    failed = []
     for entry in args.scripts:
         script, *script_args = shlex.split(entry)
         cmd = [sys.executable, os.path.join(local_root, script), *script_args]
@@ -136,8 +145,14 @@ def main(argv=None):
         # Databricks treats a top-level SystemExit (even code 0) as a task
         # failure; raise only on non-zero and let success return naturally.
         if rc != 0:
-            raise RuntimeError(f"{script} exited with code {rc}")
+            if not args.keep_going:
+                raise RuntimeError(f"{script} exited with code {rc}")
+            print(f"[run_task] !!! {script} exited with code {rc}; going on")
+            failed.append(f"{script} (code {rc})")
+            continue
         print(f"[run_task] <<< {script} OK")
+    if failed:
+        raise RuntimeError(f"{len(failed)} script(s) failed: {', '.join(failed)}")
     print("[run_task] OK")
 
 
