@@ -15,8 +15,13 @@ CERF_PROJECT_API_URL = "https://cerfgms-webapi.unocha.org/v1/project/All.json"
 _FEED_TIMEOUT = 300
 _FEED_ATTEMPTS = 3
 _FEED_BACKOFF = 60  # seconds between attempts
-# The project feed is ~18 MB and the server takes ~8 min to build it.
+# The project feed is ~18 MB. On bad days the server drops the connection
+# without a response a few minutes into each request: all 3 × 60 s attempts
+# failed on 2026-10-13, and on 2026-10-14 only the third got through. It gets
+# more attempts and a longer wait between them than the other feeds.
 _PROJECT_FEED_TIMEOUT = 1200
+_PROJECT_FEED_ATTEMPTS = 5
+_PROJECT_FEED_BACKOFF = 300
 
 _FIELDS = [
     "ApplicationID",
@@ -35,23 +40,37 @@ _FIELDS = [
 ]
 
 
-def _fetch_feed(url: str = CERF_API_URL, timeout: int = _FEED_TIMEOUT) -> bytes:
+def _fetch_feed(
+    url: str = CERF_API_URL,
+    timeout: int = _FEED_TIMEOUT,
+    attempts: int = _FEED_ATTEMPTS,
+    backoff: int = _FEED_BACKOFF,
+) -> bytes:
     last_exc: Exception | None = None
-    for attempt in range(1, _FEED_ATTEMPTS + 1):
+    for attempt in range(1, attempts + 1):
+        start = time.monotonic()
         try:
             resp = requests.get(url, timeout=timeout)
             resp.raise_for_status()
             return resp.content
-        except (requests.Timeout, requests.ConnectionError, requests.HTTPError) as e:
+        # RequestException, not just Timeout/ConnectionError/HTTPError: a drop
+        # after the headers arrive, mid-body, raises ChunkedEncodingError.
+        except requests.RequestException as e:
             last_exc = e
-            print(f"feed fetch attempt {attempt}/{_FEED_ATTEMPTS} failed: {e}")
-            if attempt < _FEED_ATTEMPTS:
-                time.sleep(_FEED_BACKOFF)
+            print(f"feed fetch attempt {attempt}/{attempts} failed after "
+                  f"{time.monotonic() - start:.0f}s: {e}")
+            if attempt < attempts:
+                time.sleep(backoff)
     raise last_exc
 
 
 def fetch_project_feed() -> bytes:
-    return _fetch_feed(CERF_PROJECT_API_URL, timeout=_PROJECT_FEED_TIMEOUT)
+    return _fetch_feed(
+        CERF_PROJECT_API_URL,
+        timeout=_PROJECT_FEED_TIMEOUT,
+        attempts=_PROJECT_FEED_ATTEMPTS,
+        backoff=_PROJECT_FEED_BACKOFF,
+    )
 
 
 @lru_cache(maxsize=1)
