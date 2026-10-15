@@ -65,12 +65,12 @@ variables:
   git_provider: gitHub
   git_branch: ${var.git_branch}
 
-# Job Compute policy (000C79D951EAF0D6): ephemeral single-worker cluster that
-# injects DSCI_AZ_DB_*/DSCI_AZ_BLOB_* (dev + prod) from the dsci secret scope.
+# Job Compute (single node) policy (0017962FF5D1E3B9): ephemeral one-VM cluster
+# that injects DSCI_AZ_DB_*/DSCI_AZ_BLOB_* (dev + prod) from the dsci secret
+# scope. The policy fixes num_workers=0, so it is not set here.
 .cluster_spec: &cluster_spec
-  policy_id: "000C79D951EAF0D6"
+  policy_id: "0017962FF5D1E3B9"
   apply_policy_default_values: true
-  num_workers: 1
 
 # pyproject dependencies (ocha-stratus pulls sqlalchemy + psycopg2-binary).
 .libs: &libs
