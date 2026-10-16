@@ -16,7 +16,7 @@ Admin-location splits are deliberately NOT mirrored (the biggest expansion facto
 no AA-tracking consumer yet) — add later if needed.
 
 Keyed on `chf_project_code` (globally unique — verified at load, exits if that ever
-changes). ~44 API requests, a few minutes total. Full-replace load in one transaction
+changes). ~35 API requests, a few minutes total. Full-replace load in one transaction
 (chunked multi-row inserts — plain executemany is unusably slow against Azure).
 
 Any pooled fund id that has stored rows but no project in this run's data keeps its
@@ -162,7 +162,8 @@ def fetch_all():
             if code not in projects:
                 projects[code] = dict(
                     chf_project_code=code,
-                    pooled_fund_id=r.get("PooledFundId"),
+                    # _int: load() compares it with the stored ids
+                    pooled_fund_id=_int(r.get("PooledFundId")),
                     pooled_fund_name=r.get("PooledFundName"),
                     allocation_type_id=r.get("AllocationTypeId"),
                     allocation_source=r.get("AllocationSourceName"),
@@ -289,8 +290,13 @@ def main():
 
         with stratus.get_engine(stage="dev", write=True).begin() as c:
             deleted = forget(c, args.forget_fund)
-        print(f"forgot pooled fund id(s) {', '.join(map(str, args.forget_fund))}: "
-              + ", ".join(f"aa.{t} {n}" for t, n in deleted.items()))
+        ids = ", ".join(map(str, args.forget_fund))
+        if not any(deleted.values()):
+            sys.exit(f"ERROR: no rows stored for pooled fund id(s) {ids}; nothing "
+                     f"deleted. Use the ids the incomplete-mirror ERROR line names "
+                     f"(AP501's projects carry 94, 95, 97, 99, 505, not 501).")
+        print(f"forgot pooled fund id(s) {ids}: "
+              + ", ".join(f"{SCHEMA}.{t} {n}" for t, n in deleted.items()))
         return
 
     projects, clusters, subips, failed = fetch_all()
@@ -315,7 +321,9 @@ def main():
         problems.append(f"fetch failed for {', '.join(failed)}")
     if problems:
         sys.exit("ERROR: CBPF project mirror incomplete — " + "; ".join(problems)
-                 + ". Every other fund was refreshed. Rerun task refresh_mirrors once "
+                 + (". Nothing was loaded (--dry-run)." if args.dry_run else
+                    ". Every other fund was refreshed.")
+                 + " Rerun task refresh_mirrors once "
                  "the CBPF API answers; if a fund really left the API, drop its rows "
                  "once with `scripts/refresh_cbpf_projects.py --forget-fund <id> ...`.")
 
