@@ -16,16 +16,20 @@ Admin-location splits are deliberately NOT mirrored (the biggest expansion facto
 no AA-tracking consumer yet) — add later if needed.
 
 Keyed on `chf_project_code` (globally unique — verified at load, exits if that ever
-changes). ~44 API requests, a few minutes total. Full-replace load in one transaction
+changes). ~35 API requests, a few minutes total. Full-replace load in one transaction
 (chunked multi-row inserts — plain executemany is unusably slow against Azure).
 
-If a fund's fetch still fails after the retries, its previous rows are kept and every
-other fund is replaced as usual. The script then exits non-zero naming the fund(s),
-so the job's failure email fires (before 2026-10, the fund was silently dropped from
-all three tables on a green run).
+Any pooled fund id that has stored rows but no project in this run's data keeps its
+previous rows, and every other fund is replaced as usual. That covers a failed
+fetch, an empty answer, a fund missing from `MstPooledFund`, and AP501 answering for
+only some of its country envelopes. The script then exits non-zero naming the
+fund(s), so the job's failure email fires (before 2026-10, such a fund was silently
+dropped from all three tables on a green run). Not caught: a partial answer under
+the same fund id. If a fund really has left the API, drop its rows once with
+`--forget-fund`.
 
 Auth: ocha-stratus get_engine(write=True); PGSSLMODE=require.
-Run:  python scripts/refresh_cbpf_projects.py [--dry-run]
+Run:  python scripts/refresh_cbpf_projects.py [--dry-run | --forget-fund ID ...]
 """
 import argparse
 import json
@@ -125,8 +129,8 @@ def _int(v):
 
 
 def fetch_all():
-    """Returns (projects, clusters, subips, failed); `failed` maps the abbreviation
-    of each fund whose fetch failed to the pooled fund ids its rows carry."""
+    """Returns (projects, clusters, subips, failed); `failed` lists the
+    abbreviations of the funds whose fetch failed."""
     # one abbreviation can cover several fund ids: the Asia-Pacific regional fund
     # (AP501) is listed once per country envelope, and its projects carry those
     # ids (94, 95, 97, 99, 505), not 501
@@ -134,18 +138,21 @@ def fetch_all():
     for f in _get("MstPooledFund?$format=json"):
         if f.get("PFAbbrv"):
             fund_ids.setdefault(f["PFAbbrv"], set()).add(f["PFId"])
+    if not fund_ids:
+        sys.exit("ERROR: MstPooledFund listed no pooled funds — nothing fetched or "
+                 "loaded.")
     abbrvs = sorted(fund_ids)
     projects, clusters, subips = {}, {}, set()
-    failed = {}
+    failed = []
     for i, ab in enumerate(abbrvs, 1):
         try:
             rows = _get(f"ProjectSummary?poolfundAbbrv={ab}&$format=json")
         # _fetch_feed has already retried; a truncated body gets past
         # raise_for_status and fails here as bad JSON (ValueError)
         except (requests.RequestException, ValueError, KeyError) as e:
-            print(f"  ERROR {ab}: fetch failed ({e}) — keeping its previous rows",
+            print(f"  ERROR {ab}: fetch failed ({e}) — its stored rows are kept",
                   file=sys.stderr)
-            failed[ab] = fund_ids[ab]
+            failed.append(ab)
             continue
         print(f"  [{i}/{len(abbrvs)}] {ab}: {len(rows)} expanded rows")
         for r in rows:
@@ -155,7 +162,8 @@ def fetch_all():
             if code not in projects:
                 projects[code] = dict(
                     chf_project_code=code,
-                    pooled_fund_id=r.get("PooledFundId"),
+                    # _int: load() compares it with the stored ids
+                    pooled_fund_id=_int(r.get("PooledFundId")),
                     pooled_fund_name=r.get("PooledFundName"),
                     allocation_type_id=r.get("AllocationTypeId"),
                     allocation_source=r.get("AllocationSourceName"),
@@ -199,9 +207,17 @@ def fetch_all():
     return list(projects.values()), list(clusters.values()), subip_rows, failed
 
 
-def load(conn, projects, clusters, subips, keep_fund_ids):
-    """Replace all three tables, except the rows of the pooled funds in
-    `keep_fund_ids` (funds whose fetch failed), which stay as they were."""
+def missing_funds(stored, projects):
+    """The stored pooled fund ids with no project in this run's data, as
+    {id: (name, projects stored)} from `stored` (same shape)."""
+    fetched = {p["pooled_fund_id"] for p in projects}
+    return {i: v for i, v in stored.items() if i not in fetched}
+
+
+def load(conn, projects, clusters, subips):
+    """Replace all three tables, except the rows of every stored pooled fund id
+    with no project in this run's data, which stay as they were. Returns those
+    ids as {id: (name, projects kept)}."""
     from sqlalchemy import text
 
     def chunked_insert(table, cols, rows, size=1000):
@@ -214,6 +230,11 @@ def load(conn, projects, clusters, subips, keep_fund_ids):
 
     for stmt in [s for s in DDL.split(";\n") if s.strip()]:
         conn.execute(text(stmt))
+    stored = {i: (name, n) for i, name, n in conn.execute(text(
+        f"select pooled_fund_id, max(pooled_fund_name), count(*) "
+        f"from {SCHEMA}.cbpf_project where pooled_fund_id is not null group by 1"
+    )).all()}
+    keep_fund_ids = missing_funds(stored, projects)
     if keep_fund_ids:
         # the child tables carry only the project code, so delete them first,
         # while cbpf_project still says which fund each code belongs to
@@ -232,29 +253,79 @@ def load(conn, projects, clusters, subips, keep_fund_ids):
     chunked_insert("cbpf_project", PROJECT_COLUMNS, projects)
     chunked_insert("cbpf_project_cluster", CLUSTER_COLUMNS, clusters)
     chunked_insert("cbpf_project_subip", SUBIP_COLUMNS, subips)
+    return keep_fund_ids
+
+
+def forget(conn, fund_ids):
+    """Delete these pooled fund ids' rows from all three tables (children first);
+    returns {table: rows deleted}."""
+    from sqlalchemy import text
+
+    ids = {"ids": list(fund_ids)}
+    codes = (f"select chf_project_code from {SCHEMA}.cbpf_project "
+             f"where pooled_fund_id = any(:ids)")
+    deleted = {}
+    for t in ("cbpf_project_subip", "cbpf_project_cluster"):
+        deleted[t] = conn.execute(text(f"delete from {SCHEMA}.{t} "
+                                       f"where chf_project_code in ({codes})"),
+                                  ids).rowcount
+    deleted["cbpf_project"] = conn.execute(text(
+        f"delete from {SCHEMA}.cbpf_project where pooled_fund_id = any(:ids)"), ids
+    ).rowcount
+    return deleted
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--dry-run", action="store_true")
+    mode = ap.add_mutually_exclusive_group()
+    mode.add_argument("--dry-run", action="store_true")
+    mode.add_argument("--forget-fund", type=int, nargs="+", metavar="ID",
+                      help="delete these pooled fund ids' rows from all three tables "
+                      "and exit, without fetching (for a fund that really left the "
+                      "API, which otherwise keeps the job red)")
     args = ap.parse_args()
+
+    if args.forget_fund:
+        import ocha_stratus as stratus
+
+        with stratus.get_engine(stage="dev", write=True).begin() as c:
+            deleted = forget(c, args.forget_fund)
+        ids = ", ".join(map(str, args.forget_fund))
+        if not any(deleted.values()):
+            sys.exit(f"ERROR: no rows stored for pooled fund id(s) {ids}; nothing "
+                     f"deleted. Use the ids the incomplete-mirror ERROR line names "
+                     f"(AP501's projects carry 94, 95, 97, 99, 505, not 501).")
+        print(f"forgot pooled fund id(s) {ids}: "
+              + ", ".join(f"{SCHEMA}.{t} {n}" for t, n in deleted.items()))
+        return
 
     projects, clusters, subips, failed = fetch_all()
     print(f"normalized: {len(projects)} projects, {len(clusters)} cluster rows, "
           f"{len(subips)} sub-implementing-partner rows")
+    kept = {}
     if not args.dry_run:
         import ocha_stratus as stratus
 
         eng = stratus.get_engine(stage="dev", write=True)
         with eng.begin() as c:
-            load(c, projects, clusters, subips, set().union(*failed.values()))
+            kept = load(c, projects, clusters, subips)
         print(f"loaded aa.cbpf_project ({len(projects)}), aa.cbpf_project_cluster "
               f"({len(clusters)}), aa.cbpf_project_subip ({len(subips)})")
+    problems = []
+    if kept:
+        problems.append(
+            "kept the previous rows of pooled fund id(s) with no project in this "
+            "run: " + "; ".join(f"{name} (id {i}, {n} projects)"
+                                for i, (name, n) in sorted(kept.items())))
     if failed:
-        sys.exit(f"ERROR: {len(failed)} pooled fund(s) failed to fetch: "
-                 f"{', '.join(failed)} — their previous rows were kept and every "
-                 f"other fund was refreshed. Rerun task refresh_mirrors once the "
-                 f"CBPF API answers.")
+        problems.append(f"fetch failed for {', '.join(failed)}")
+    if problems:
+        sys.exit("ERROR: CBPF project mirror incomplete — " + "; ".join(problems)
+                 + (". Nothing was loaded (--dry-run)." if args.dry_run else
+                    ". Every other fund was refreshed.")
+                 + " Rerun task refresh_mirrors once "
+                 "the CBPF API answers; if a fund really left the API, drop its rows "
+                 "once with `scripts/refresh_cbpf_projects.py --forget-fund <id> ...`.")
 
 
 if __name__ == "__main__":
