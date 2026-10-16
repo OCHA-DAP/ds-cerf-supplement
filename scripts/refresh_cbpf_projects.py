@@ -19,8 +19,9 @@ Keyed on `chf_project_code` (globally unique — verified at load, exits if that
 changes). ~44 API requests, a few minutes total. Full-replace load in one transaction
 (chunked multi-row inserts — plain executemany is unusably slow against Azure).
 
-If a fund's fetch still fails after the retries, its previous rows are kept and every
-other fund is replaced as usual. The script then exits non-zero naming the fund(s),
+If a fund's fetch still fails after the retries, or comes back with no projects while
+some are stored for it, its previous rows are kept and every other fund is replaced
+as usual. The script then exits non-zero naming the fund(s),
 so the job's failure email fires (before 2026-10, the fund was silently dropped from
 all three tables on a green run).
 
@@ -125,8 +126,9 @@ def _int(v):
 
 
 def fetch_all():
-    """Returns (projects, clusters, subips, failed); `failed` maps the abbreviation
-    of each fund whose fetch failed to the pooled fund ids its rows carry."""
+    """Returns (projects, clusters, subips, failed, empty); `failed` and `empty` map
+    the abbreviation of each fund whose fetch failed / came back with no projects
+    to the pooled fund ids its rows carry."""
     # one abbreviation can cover several fund ids: the Asia-Pacific regional fund
     # (AP501) is listed once per country envelope, and its projects carry those
     # ids (94, 95, 97, 99, 505), not 501
@@ -136,7 +138,7 @@ def fetch_all():
             fund_ids.setdefault(f["PFAbbrv"], set()).add(f["PFId"])
     abbrvs = sorted(fund_ids)
     projects, clusters, subips = {}, {}, set()
-    failed = {}
+    failed, empty = {}, {}
     for i, ab in enumerate(abbrvs, 1):
         try:
             rows = _get(f"ProjectSummary?poolfundAbbrv={ab}&$format=json")
@@ -148,6 +150,8 @@ def fetch_all():
             failed[ab] = fund_ids[ab]
             continue
         print(f"  [{i}/{len(abbrvs)}] {ab}: {len(rows)} expanded rows")
+        if not any(r.get("ChfProjectCode") for r in rows):
+            empty[ab] = fund_ids[ab]
         for r in rows:
             code = r.get("ChfProjectCode")
             if not code:
@@ -196,7 +200,18 @@ def fetch_all():
                         _num(amts[j]) if j < len(amts) else None,
                     ))
     subip_rows = [dict(zip(SUBIP_COLUMNS, s)) for s in sorted(subips, key=str)]
-    return list(projects.values()), list(clusters.values()), subip_rows, failed
+    return list(projects.values()), list(clusters.values()), subip_rows, failed, empty
+
+
+def stored_counts(conn):
+    """{pooled_fund_id: projects stored}; empty before the first load."""
+    from sqlalchemy import text
+
+    if conn.execute(text(f"select to_regclass('{SCHEMA}.cbpf_project')")).scalar() is None:
+        return {}
+    return dict(conn.execute(text(
+        f"select pooled_fund_id, count(*) from {SCHEMA}.cbpf_project group by 1"
+    )).all())
 
 
 def load(conn, projects, clusters, subips, keep_fund_ids):
@@ -239,14 +254,26 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
-    projects, clusters, subips, failed = fetch_all()
+    projects, clusters, subips, failed, empty = fetch_all()
     print(f"normalized: {len(projects)} projects, {len(clusters)} cluster rows, "
           f"{len(subips)} sub-implementing-partner rows")
+    if args.dry_run and empty:
+        print(f"  note: no projects for {', '.join(empty)} (not checked against "
+              f"the stored rows in --dry-run)")
     if not args.dry_run:
         import ocha_stratus as stratus
 
         eng = stratus.get_engine(stage="dev", write=True)
         with eng.begin() as c:
+            # an empty answer for a fund that has stored projects is a failed
+            # fetch too; a new envelope with nothing stored is really empty
+            stored = stored_counts(c)
+            for ab, ids in empty.items():
+                n = sum(stored.get(i, 0) for i in ids)
+                if n:
+                    print(f"  ERROR {ab}: the API returned no projects but {n} are "
+                          f"stored — keeping them", file=sys.stderr)
+                    failed[ab] = ids
             load(c, projects, clusters, subips, set().union(*failed.values()))
         print(f"loaded aa.cbpf_project ({len(projects)}), aa.cbpf_project_cluster "
               f"({len(clusters)}), aa.cbpf_project_subip ({len(subips)})")
