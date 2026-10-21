@@ -10,10 +10,13 @@ in schema `aa`, joining to `aa.cerf_allocation` on `application_code`:
                               `project_code`.
 - `aa.cerf_project_sector`  — per-sector amount split (1-5 rows per project). No PK:
                               the feed has real duplicate (project, sector) rows with
-                              split amounts (e.g. 15-UF-FAO-004). Full-replaced.
+                              split amounts (e.g. 15-UF-FAO-004). Replaced per project.
 - `aa.cerf_project_country` — per-country budget split for regional projects (e.g.
                               Venezuela-crisis projects spanning 5+ countries).
-                              Full-replaced, PK (project_code, country_iso3).
+                              Replaced per project, PK (project_code, country_iso3).
+  A project with stored sector or country rows but none in the feed keeps them; if
+  it is in the feed, the script then exits non-zero naming it (2026-10-17: the feed
+  dropped the sectors of 666 projects and a green run wiped them).
 
 Like the allocation feed, the numeric ID is NOT unique: `projectID` has ~3.1k
 collisions across the feed's two source tables (`tableName` M/P). `projectCode`
@@ -305,6 +308,7 @@ def main():
         f"{c} = excluded.{c}" for c in PROJECT_COLUMNS if c != "project_code"
     )
 
+    feed_codes = {r["project_code"] for r in projects}
     eng = stratus.get_engine(stage="dev", write=True)
     with eng.begin() as c:
         for stmt in [s for s in DDL.split(";\n") if s.strip()]:
@@ -312,14 +316,32 @@ def main():
         before = c.execute(text(f"select count(*) from {SCHEMA}.cerf_project")).scalar()
         insert_chunked(c, "cerf_project", PROJECT_COLUMNS, projects,
                        f"on conflict (project_code) do update set {set_clause}")
-        c.execute(text(f"delete from {SCHEMA}.cerf_project_sector"))
-        insert_chunked(c, "cerf_project_sector", SECTOR_COLUMNS, sectors)
-        c.execute(text(f"delete from {SCHEMA}.cerf_project_country"))
-        insert_chunked(c, "cerf_project_country", COUNTRY_COLUMNS, countries)
+        # A project with stored sector/country rows but none in this run keeps its
+        # previous rows (every other project is replaced). On 2026-10-17 the feed
+        # answered with every 2024-26 project but no sectors for 666 of them, and the
+        # full replace wiped their 1,011 sector rows on a green run.
+        kept = {}
+        for table, rows in (("cerf_project_sector", sectors),
+                            ("cerf_project_country", countries)):
+            with_rows = {r["project_code"] for r in rows}
+            stored = {r[0] for r in c.execute(text(
+                f"select distinct project_code from {SCHEMA}.{table}"))}
+            keep = sorted(stored - with_rows)
+            c.execute(text(f"delete from {SCHEMA}.{table} "
+                           f"where not (project_code = any(:keep))"), {"keep": keep})
+            insert_chunked(c, table, SECTOR_COLUMNS if table == "cerf_project_sector"
+                           else COUNTRY_COLUMNS, rows)
+            kept[table] = [k for k in keep if k in feed_codes]
         after = c.execute(text(f"select count(*) from {SCHEMA}.cerf_project")).scalar()
     print(f"project mirror upserted: {len(projects)} feed rows applied · "
           f"aa.cerf_project {before} -> {after} rows (+{after - before} new) · "
-          f"sectors {len(sectors)} · countries {len(countries)} (full-replaced)")
+          f"sectors {len(sectors)} · countries {len(countries)} (replaced per project)")
+    problems = [f"{len(v)} project(s) in the feed came back with no {t} rows but had "
+                f"stored ones, kept (e.g. {', '.join(v[:3])})" for t, v in kept.items() if v]
+    if problems:
+        sys.exit("ERROR: CERF project mirror incomplete — " + "; ".join(problems)
+                 + ". Check the feed; a project that really lost its rows keeps the job "
+                 "red until its stored rows are deleted by hand.")
 
 
 if __name__ == "__main__":
