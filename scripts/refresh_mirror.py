@@ -7,10 +7,12 @@ join to this table on `application_code`.
 
 `aa.cerf_allocation` is a PURE mirror and this script is its SOLE writer: feed-derived
 columns + the deterministic `aa_keyword` title flag, idempotently UPSERTED keyed on
-`application_code`. Everything AA-interpretive lives in separate KB-owned tables
-(`aa.actual_activation`, `aa.activation_allocation` — the curated crosswalk incl.
-ad-hoc flags, maintained by ds-knowledge-base's aa-links confirm flow); this script
-never touches those.
+`application_code`. A value the feed leaves blank never overwrites a stored one: on about
+half the days in Oct 2026 the feed answered with TotalIndividualReached blank for every
+newer-style (CERF-…) allocation, and each such run blanked ~129 stored figures.
+Everything AA-interpretive lives in separate KB-owned tables (`aa.actual_activation`,
+`aa.activation_allocation` — the curated crosswalk incl. ad-hoc flags, maintained by
+ds-knowledge-base's aa-links confirm flow); this script never touches those.
 
 Keyed on ApplicationCode; ApplicationID is NOT unique in the feed (~431 collisions).
 
@@ -22,6 +24,7 @@ import os
 import re
 import sys
 import xml.etree.ElementTree as ET
+from pathlib import Path
 
 os.environ.setdefault("PGSSLMODE", "require")
 
@@ -104,7 +107,6 @@ def fetch_cerf(xml_path=None):
         root = ET.parse(xml_path).getroot()
     else:
         # shared retrying fetch — the OneGMS API stalls occasionally (2026-07-28)
-        from pathlib import Path
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         from src.cerf_api import _fetch_feed
         root = ET.fromstring(_fetch_feed())
@@ -162,12 +164,15 @@ def main():
 
     import ocha_stratus as stratus
     from sqlalchemy import text
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from src.mirror import kept_blanks
 
+    # a blank from the feed keeps the stored value (see the module docstring)
     set_clause = ", ".join(
-        f"{c} = excluded.{c}" for c in FEED_COLUMNS if c != "application_code"
+        f"{c} = coalesce(excluded.{c}, t.{c})" for c in FEED_COLUMNS if c != "application_code"
     )
     insert_sql = text(
-        f"insert into {SCHEMA}.cerf_allocation ({', '.join(FEED_COLUMNS)}) "
+        f"insert into {SCHEMA}.cerf_allocation as t ({', '.join(FEED_COLUMNS)}) "
         f"values ({', '.join(':' + c for c in FEED_COLUMNS)}) "
         f"on conflict (application_code) do update set {set_clause}"
     )
@@ -178,10 +183,14 @@ def main():
         for stmt in [s for s in DDL.split(";\n") if s.strip()]:
             c.execute(text(stmt))
         before = c.execute(text(f"select count(*) from {SCHEMA}.cerf_allocation")).scalar()
+        kept = kept_blanks(c, "cerf_allocation", "application_code", FEED_COLUMNS, payload)
         c.execute(insert_sql, payload)
         after = c.execute(text(f"select count(*) from {SCHEMA}.cerf_allocation")).scalar()
     print(f"mirror upserted: {len(rows)} feed rows applied · table {before} -> {after} rows "
           f"(+{after - before} new)")
+    if kept:
+        print("WARNING: the feed left stored values blank; kept them — "
+              + "; ".join(f"{col}: {n}" for col, n in kept.items()))
 
 
 if __name__ == "__main__":
