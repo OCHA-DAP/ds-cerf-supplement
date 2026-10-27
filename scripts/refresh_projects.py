@@ -7,7 +7,10 @@ in schema `aa`, joining to `aa.cerf_allocation` on `application_code`:
 - `aa.cerf_project`         — one row per project (agency, amounts, dates, status,
                               planned/reached people incl. demographic breakdowns,
                               HRP cap-codes, project summary), UPSERTED keyed on
-                              `project_code`.
+                              `project_code`. A value the feed leaves blank keeps the
+                              stored one: in Oct 2026 the feed often blanked people
+                              reached (+ breakdowns), sector, beneficiary type and
+                              cap-codes for ~460-680 newer-style (CERF-…) projects.
 - `aa.cerf_project_sector`  — per-sector amount split (1-5 rows per project). No PK:
                               the feed has real duplicate (project, sector) rows with
                               split amounts (e.g. 15-UF-FAO-004). Replaced per project.
@@ -287,6 +290,8 @@ def main():
 
     import ocha_stratus as stratus
     from sqlalchemy import text
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+    from src.mirror import kept_blanks
 
     def insert_chunked(conn, table, columns, rows, on_conflict="", chunk=500):
         """Multi-row VALUES inserts — plain executemany is one round-trip per row,
@@ -299,13 +304,14 @@ def main():
             )
             params = {f"{c}_{i}": r[c] for i, r in enumerate(batch) for c in columns}
             conn.execute(
-                text(f"insert into {SCHEMA}.{table} ({', '.join(columns)}) "
+                text(f"insert into {SCHEMA}.{table} as t ({', '.join(columns)}) "
                      f"values {values} {on_conflict}"),
                 params,
             )
 
+    # a blank from the feed keeps the stored value (see the module docstring)
     set_clause = ", ".join(
-        f"{c} = excluded.{c}" for c in PROJECT_COLUMNS if c != "project_code"
+        f"{c} = coalesce(excluded.{c}, t.{c})" for c in PROJECT_COLUMNS if c != "project_code"
     )
 
     feed_codes = {r["project_code"] for r in projects}
@@ -314,6 +320,7 @@ def main():
         for stmt in [s for s in DDL.split(";\n") if s.strip()]:
             c.execute(text(stmt))
         before = c.execute(text(f"select count(*) from {SCHEMA}.cerf_project")).scalar()
+        kept_values = kept_blanks(c, "cerf_project", "project_code", PROJECT_COLUMNS, projects)
         insert_chunked(c, "cerf_project", PROJECT_COLUMNS, projects,
                        f"on conflict (project_code) do update set {set_clause}")
         # A project with stored sector/country rows but none in this run keeps its
@@ -336,6 +343,9 @@ def main():
     print(f"project mirror upserted: {len(projects)} feed rows applied · "
           f"aa.cerf_project {before} -> {after} rows (+{after - before} new) · "
           f"sectors {len(sectors)} · countries {len(countries)} (replaced per project)")
+    if kept_values:
+        print("WARNING: the feed left stored project values blank; kept them — "
+              + "; ".join(f"{col}: {n}" for col, n in kept_values.items()))
     problems = [f"{len(v)} project(s) in the feed came back with no {t} rows but had "
                 f"stored ones, kept (e.g. {', '.join(v[:3])})" for t, v in kept.items() if v]
     if problems:
