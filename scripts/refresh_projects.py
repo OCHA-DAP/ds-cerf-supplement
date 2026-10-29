@@ -19,7 +19,10 @@ in schema `aa`, joining to `aa.cerf_allocation` on `application_code`:
                               Replaced per project, PK (project_code, country_iso3).
   A project with stored sector or country rows but none in the feed keeps them; if
   it is in the feed, the script then exits non-zero naming it (2026-10-17: the feed
-  dropped the sectors of 666 projects and a green run wiped them).
+  dropped the sectors of 666 projects and a green run wiped them). Before loading,
+  a feed like that is downloaded again (a 10-min wait, then one ~7-min attempt) for
+  up to an hour, and the download missing the fewest rows is loaded (2026-10-25..29
+  the ~05:50 UTC feed had no sectors for 676 newer projects; by 13:00 it was whole).
 
 Like the allocation feed, the numeric ID is NOT unique: `projectID` has ~3.1k
 collisions across the feed's two source tables (`tableName` M/P). `projectCode`
@@ -27,7 +30,7 @@ collisions across the feed's two source tables (`tableName` M/P). `projectCode`
 `plannedChildren`/`plannedAdults` (and reached equivalents) are not mirrored: they
 equal girls+boys / women+men in all but ~10 rows.
 
-This script is the SOLE writer of all three tables; everything runs in one
+This script is the SOLE writer of all three tables; the load runs in one
 transaction. The feed takes ~8 min to generate server-side — be patient.
 
 Auth: ocha-stratus get_engine(write=True); needs DSCI_AZ_DB_DEV_* (+ _WRITE) env and
@@ -38,11 +41,20 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 os.environ.setdefault("PGSSLMODE", "require")
 
 SCHEMA = "aa"
+# A feed that drops the rows of stored projects is downloaded again after a
+# REFETCH_WAIT s wait, one attempt of at most REFETCH_TIMEOUT s each, for as long
+# as the wait and a full attempt fit in REFETCH_FOR s. Capped at an hour to keep
+# the job cluster's cost down. (The timeout is requests' between-bytes read
+# timeout, so a server trickling the body could run one attempt a little over.)
+REFETCH_FOR = 3600
+REFETCH_WAIT = 600
+REFETCH_TIMEOUT = 600
 
 PROJECT_COLUMNS = [
     "project_code", "project_id", "application_code", "year", "country_iso3",
@@ -180,14 +192,15 @@ def _joined(items, key):
     return ";".join(out) or None
 
 
-def fetch_projects(json_path=None):
-    """All projects from the OneGMS feed -> (project, sector, country) row lists."""
+def fetch_projects(json_path=None, **feed_args):
+    """All projects from the OneGMS feed -> (project, sector, country) row lists.
+    ``feed_args`` (attempts, timeout) go to fetch_project_feed."""
     if json_path:
         feed = json.loads(Path(json_path).read_bytes())
     else:
         sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
         from src.cerf_api import fetch_project_feed
-        feed = json.loads(fetch_project_feed())
+        feed = json.loads(fetch_project_feed(**feed_args))
 
     projects, sectors, countries = [], [], []
     for p in feed:
@@ -275,6 +288,15 @@ def fetch_projects(json_path=None):
     return projects, sectors, countries
 
 
+def missing_rows(stored, projects, sectors, countries):
+    """{table: codes} of feed projects with stored rows in that child table but none
+    in this feed. ``stored`` maps each child table to its stored project codes."""
+    feed_codes = {r["project_code"] for r in projects}
+    return {table: sorted((stored[table] & feed_codes) - {r["project_code"] for r in rows})
+            for table, rows in (("cerf_project_sector", sectors),
+                                ("cerf_project_country", countries))}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--json", help="parse a saved All.json instead of hitting the API")
@@ -314,11 +336,42 @@ def main():
         f"{c} = coalesce(excluded.{c}, t.{c})" for c in PROJECT_COLUMNS if c != "project_code"
     )
 
-    feed_codes = {r["project_code"] for r in projects}
     eng = stratus.get_engine(stage="dev", write=True)
     with eng.begin() as c:
         for stmt in [s for s in DDL.split(";\n") if s.strip()]:
             c.execute(text(stmt))
+        stored_codes = {t: {r[0] for r in c.execute(text(
+            f"select distinct project_code from {SCHEMA}.{t}"))}
+            for t in ("cerf_project_sector", "cerf_project_country")}
+
+    missing = missing_rows(stored_codes, projects, sectors, countries)
+    start = time.monotonic()
+    while (not args.json and any(missing.values())
+           and time.monotonic() - start + REFETCH_WAIT + REFETCH_TIMEOUT <= REFETCH_FOR):
+        print("the feed has no rows for stored projects ("
+              + "; ".join(f"{t}: {len(v)}" for t, v in missing.items() if v)
+              + f"); downloading it again in {REFETCH_WAIT // 60} min")
+        time.sleep(REFETCH_WAIT)
+        # Any failure (dropped connection, a body that isn't the feed, fetch_projects'
+        # own code checks) keeps the earlier download and counts as one try.
+        try:
+            again = fetch_projects(attempts=1, timeout=REFETCH_TIMEOUT)
+        except (Exception, SystemExit) as e:
+            print(f"re-download failed ({e}); keeping the earlier one")
+            continue
+        now_missing = missing_rows(stored_codes, *again)
+        better = sum(map(len, now_missing.values())) <= sum(map(len, missing.values()))
+        print(f"re-downloaded after {(time.monotonic() - start) / 60:.0f} min: "
+              f"{len(again[0])} projects ({len(again[1])} sector rows, "
+              f"{len(again[2])} country rows)" + ("" if better else
+              " — missing more rows than the earlier download, discarded"))
+        if better:
+            projects, sectors, countries = again
+            missing = now_missing
+    eng.dispose()  # the wait can leave the pooled connection idle for an hour
+
+    feed_codes = {r["project_code"] for r in projects}
+    with eng.begin() as c:
         before = c.execute(text(f"select count(*) from {SCHEMA}.cerf_project")).scalar()
         kept_values = kept_blanks(c, "cerf_project", "project_code", PROJECT_COLUMNS, projects)
         insert_chunked(c, "cerf_project", PROJECT_COLUMNS, projects,
