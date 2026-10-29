@@ -64,11 +64,14 @@ def _fetch_feed(
     raise last_exc
 
 
-def fetch_project_feed() -> bytes:
+def fetch_project_feed(
+    attempts: int = _PROJECT_FEED_ATTEMPTS,
+    timeout: int = _PROJECT_FEED_TIMEOUT,
+) -> bytes:
     return _fetch_feed(
         CERF_PROJECT_API_URL,
-        timeout=_PROJECT_FEED_TIMEOUT,
-        attempts=_PROJECT_FEED_ATTEMPTS,
+        timeout=timeout,
+        attempts=attempts,
         backoff=_PROJECT_FEED_BACKOFF,
     )
 
