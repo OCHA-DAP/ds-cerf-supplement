@@ -7,7 +7,7 @@ on GitHub Pages.
 
 A daily pipeline (no interactive app), chained so each stage runs after the last:
 
-1. **Refresh OneGMS mirror** (Databricks job `CERF Supplement Daily`, task `refresh`) — daily 05:30 UTC. Upserts the CERF feed into `aa.cerf_allocation` so newly-published allocations are matchable. On success it triggers the matchers.
+1. **Refresh OneGMS mirror** (Databricks job `CERF Supplement Daily`, task `refresh`) — daily 13:00 UTC. Upserts the CERF feed into `aa.cerf_allocation` so newly-published allocations are matchable. On success it triggers the matchers.
 2. **Match storms** (task `match_storms`) — runs after the mirror. Stage 1 backfills SIDs that resolve unambiguously from the allocation title and opens a GitHub issue (tagging the maintainer) for the rest; stage 2 (Claude) researches the remainder and applies validated, high-confidence matches.
 3. **Match droughts** (task `match_droughts`) — runs after the storm matcher (matchers serialize — they share `aa.cerf_supplement` writes). Claude reads each undated drought allocation's OneGMS narratives (+ web search) to date the **rainfall deficit** — often up to a year before the allocation — and the apply step writes only validated, confidence ≥ 0.8 periods; the rest get a `cerf-drought` issue to confirm.
 4. **Deploy site** (task `publish_site` → [workflow](.github/workflows/deploy-site.yml)) — runs after matching. A lightweight page (Storms / Droughts tabs) regenerated from the DB, parked on the dev blob and deployed to Pages by GitHub Actions. → **https://ocha-dap.github.io/ds-cerf-supplement/**
@@ -88,7 +88,7 @@ Pages source must be set to **GitHub Actions**.
 
 ## The daily pipeline (Databricks)
 
-One Databricks job, **CERF Supplement Daily** (`databricks.yml`, 05:30 UTC),
+One Databricks job, **CERF Supplement Daily** (`databricks.yml`, 13:00 UTC),
 runs the whole chain as five tasks on one ephemeral job cluster. It replaced
 four `workflow_run`-chained GitHub Actions workflows in 2026-09, when the
 GitHub runners lost network access to the DB. The scripts are unchanged: each
@@ -151,7 +151,7 @@ Adding yet another matcher = a new task chained off `match_droughts` in
 (`projects/ds-cerf-supplement/site/data.json`) and dispatches the
 `deploy-site.yml` workflow, which downloads it (`scripts/fetch_site_data.py`)
 and deploys `site/` to GitHub Pages. The workflow also runs on push to
-`site/**` and daily at 08:00 UTC as a backstop.
+`site/**` and daily at 16:00 UTC as a backstop.
 
 ### Operating the job
 

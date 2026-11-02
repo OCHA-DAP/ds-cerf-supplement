@@ -6,7 +6,7 @@ ask GitHub to deploy the Pages site from it.
   1. upload site/data.json -> projects/ds-cerf-supplement/site/data.json (dev blob)
   2. POST a workflow_dispatch for deploy-site.yml (needs GITHUB_TOKEN with
      actions:write on the repo; skipped with a warning when absent — the
-     workflow's daily 08:00 UTC schedule is the backstop either way).
+     workflow's daily 16:00 UTC schedule is the backstop either way).
 """
 import json
 import os

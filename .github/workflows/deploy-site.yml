@@ -9,7 +9,7 @@ name: Deploy site
 # demand, and once daily as a backstop in case the dispatch didn't fire.
 on:
   schedule:
-    - cron: "0 8 * * *"
+    - cron: "0 16 * * *"  # after the 13:00 UTC Databricks run
   workflow_dispatch:
   push:
     branches: [main]
