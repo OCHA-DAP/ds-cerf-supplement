@@ -1,6 +1,6 @@
 # Databricks Asset Bundle — ds-cerf-supplement
 #
-# One job, "CERF Supplement Daily", 05:30 UTC: the whole chain that used to be
+# One job, "CERF Supplement Daily", 13:00 UTC: the whole chain that used to be
 # four GitHub Actions workflows linked by workflow_run (the GitHub runners lost
 # network access to the DB in 2026-09). Five chained tasks on one ephemeral
 # job cluster, each running the unchanged scripts through databricks/run_task.py:
@@ -99,9 +99,13 @@ resources:
           level: CAN_MANAGE
 
       schedule:
-        # 05:30 UTC daily (the old refresh-mirror cron). No explicit
+        # 13:00 UTC daily. It ran at 05:30 UTC (the old refresh-mirror cron)
+        # until 2026-11: at that hour the OneGMS project feed often came back
+        # without the sector rows of most CERF-… projects (10-17, 10-25..29,
+        # 10-31..11-02), while every midday download (13:00-14:30 UTC on
+        # 10-29 and 11-02) was complete. No explicit
         # pause_status: the prod target runs it, the dev target auto-pauses it.
-        quartz_cron_expression: "0 30 5 * * ?"
+        quartz_cron_expression: "0 0 13 * * ?"
         timezone_id: UTC
 
       max_concurrent_runs: 1
