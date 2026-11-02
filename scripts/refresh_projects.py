@@ -22,7 +22,8 @@ in schema `aa`, joining to `aa.cerf_allocation` on `application_code`:
   dropped the sectors of 666 projects and a green run wiped them). Before loading,
   a feed like that is downloaded again (a 10-min wait, then one ~7-min attempt) for
   up to an hour, and the download missing the fewest rows is loaded (2026-10-25..29
-  the ~05:50 UTC feed had no sectors for 676 newer projects; by 13:00 it was whole).
+  the ~05:50 UTC feed had no sectors for 676 newer projects; by 13:00 it was whole,
+  so the job moved to 13:00 UTC in 2026-11 and the re-download is the fallback).
 
 Like the allocation feed, the numeric ID is NOT unique: `projectID` has ~3.1k
 collisions across the feed's two source tables (`tableName` M/P). `projectCode`
